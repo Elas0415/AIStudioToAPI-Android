@@ -134,10 +134,13 @@ app/src/main/
 > Release 资源获取。首次构建前执行：
 
 ```bash
-# 方式 A：从 Release 下载（把 URL 换成你的 Release 资源地址）
-./scripts/fetch-rootfs.sh https://github.com/<owner>/<repo>/releases/download/v1.0/rootfs.tar.zst
+# 方式 A：从 Release 下载（自动获取最新 rootfs）
+./scripts/fetch-rootfs.sh
 
-# 方式 B：使用本地已有的 rootfs 文件
+# 方式 B：指定 Release 链接
+./scripts/fetch-rootfs.sh https://github.com/Elas0415/AIStudioToAPI-Android/releases/download/v1.0/rootfs.tar.zst
+
+# 方式 C：使用本地已有的 rootfs 文件
 ./scripts/fetch-rootfs.sh /path/to/rootfs.tar.zst
 ```
 
@@ -150,6 +153,9 @@ export ANDROID_HOME=<sdk>
 ```
 
 或在 Android Studio 中打开本目录直接 Run ▶（需 arm64 真机/模拟器）。
+
+> 💡 上传/下载大文件时若使用本地 HTTP 代理（如 Clash 7890 端口），代理可能截断
+> 传输。可加 `--noproxy '*'` 绕过代理。
 
 ## 发布到 GitHub（维护者备忘）
 

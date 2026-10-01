@@ -11,15 +11,15 @@
 | 文件 | 说明 |
 |---|---|
 | `AIStudioToAPI-Android-v1.0-debug.apk` | 可直接安装的 APK（约 828MB，arm64-v8a，Android 8.0+）。**内已包含运行环境，无需其它文件** |
+| `rootfs.tar.zst` | Ubuntu 24.04 arm64 运行环境（约 823MB）。**仅从源码构建时需要**，普通用户无需下载 |
 
-> 已安装 APK 的用户不需要额外的 rootfs 文件。
-> 若你想从源码构建，请从本 APK 中提取 `assets/rootfs.tar.zst`，或联系作者获取
-> （`scripts/fetch-rootfs.sh` 需要该文件）。
+已安装 APK 的用户**不需要**额外的 rootfs 文件（已内置于 APK）。
 
 ## 校验（SHA-256）
 
 ```
 e59aa7e189dbf4aaa14340e7ce949410a2bb9da9d520fbe3d2b5c64171083fbe  AIStudioToAPI-Android-v1.0-debug.apk
+a4039c2e9969bc3e3c1e1c77fa5949d3dfebb1c608f3b946ba78e8a0d0400e68  rootfs.tar.zst
 ```
 
 ## 安装
