@@ -1,0 +1,43 @@
+name: Build APK
+
+# Builds the debug APK. The ~823MB rootfs.tar.zst is not in the repo, so this
+# workflow downloads it from the latest GitHub Release asset named
+# "rootfs.tar.zst" (upload it once via a Release) before building.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Fetch rootfs.tar.zst from latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p app/src/main/assets
+          gh release download --pattern rootfs.tar.zst \
+            --dir /tmp/rootfs --clobber || {
+              echo "::error::rootfs.tar.zst not found in Releases. Upload it as a Release asset first."; exit 1; }
+          mv /tmp/rootfs/rootfs.tar.zst app/src/main/assets/rootfs.tar.zst
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk

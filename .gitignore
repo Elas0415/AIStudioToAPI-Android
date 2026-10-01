@@ -21,3 +21,6 @@ local.properties
 Thumbs.db
 *.swp
 *~
+
+# ---- Release assets staged locally (uploaded to GitHub Releases, not git) ----
+/dist/
