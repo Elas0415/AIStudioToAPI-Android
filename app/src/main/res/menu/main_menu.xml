@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/action_reload"
+        android:title="@string/menu_reload"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_restart"
+        android:title="@string/menu_restart"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_api_key"
+        android:title="@string/menu_api_key"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_custom_key"
+        android:title="@string/menu_custom_key"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_logs"
+        android:title="@string/menu_logs"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_lan"
+        android:title="@string/menu_lan"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_login"
+        android:title="@string/menu_login"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_vnc_login"
+        android:title="@string/menu_vnc_login"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_console"
+        android:title="@string/menu_console"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_import_auth"
+        android:title="@string/menu_import_auth"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_battery"
+        android:title="@string/menu_battery"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_about"
+        android:title="@string/menu_about"
+        app:showAsAction="never" />
+
+</menu>

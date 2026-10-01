@@ -1,0 +1,23 @@
+# ---- Build outputs ----
+/app/build/
+/build/
+/.gradle/
+/.idea/
+*.iml
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# ---- Local config (machine-specific) ----
+local.properties
+
+# ---- Large runtime blob (fetched separately, see scripts/fetch-rootfs.sh) ----
+# The prebuilt Ubuntu rootfs is ~823MB and exceeds GitHub's 100MB file limit.
+# It is published as a GitHub Release asset instead of being committed.
+/app/src/main/assets/rootfs.tar.zst
+
+# ---- OS / editor cruft ----
+.DS_Store
+Thumbs.db
+*.swp
+*~

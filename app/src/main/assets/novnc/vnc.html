@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <title>AI Studio 登录</title>
+
+    <!--
+    noVNC 移动端客户端，由 AIStudioToAPI Android 内置（本地打包，不依赖 CDN）。
+    noVNC 使用 MPL 2.0，本文件基于其 2-Clause BSD 示例改写，见 LICENSE.txt。
+
+    连接参数通过查询字符串传入（由 App 通过 WebView 追加）：
+        vnc.html?host=127.0.0.1&port=7860&path=vnc
+    path 需对 "/" 进行 URL 编码，例如 vnc%2F。
+
+    移动端改进：
+      - 单击即点击（触摸直接发送鼠标事件，不再需要两次点击模拟鼠标）。
+      - 单指滑动 = 拖动（视口铺满屏幕时等效滚动页面）。
+      - 双指捏合 = 缩放视口（放大后再单指拖动查看）。
+      - 顶部工具栏可「显示/隐藏键盘」，用系统输入法输入文本；同时提供常用符号。
+      - 所有操作发送到 Xvfb 中的 Camoufox 窗口，用于完成 Google 登录。
+    -->
+
+    <style>
+        html, body {
+            margin: 0;
+            height: 100%;
+            background: #0d1117;
+            overflow: hidden;
+            font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+        #top_bar {
+            background-color: #161b22;
+            color: #c9d1d9;
+            font-size: 12px;
+            padding: 6px 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid #30363d;
+        }
+        #status { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #actions { display: flex; align-items: center; }
+        #actions button {
+            margin-left: 6px;
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+        #actions button:active { background: #30363d; }
+        #actions button.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+        #screen {
+            position: absolute;
+            top: 35px;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            overflow: hidden;
+            background: #000;
+            touch-action: none;
+        }
+        /* 底部悬浮：软键盘输入框 + 方向/滚动快捷键 */
+        #bottom_bar {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: none;
+            flex-direction: column;
+            background: #161b22ee;
+            border-top: 1px solid #30363d;
+            z-index: 20;
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        #keyboardInput {
+            width: 100%;
+            box-sizing: border-box;
+            border: 0;
+            padding: 10px;
+            font-size: 16px;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        #keypad {
+            display: flex;
+            flex-wrap: wrap;
+            padding: 4px;
+        }
+        #keypad button {
+            flex: 1 0 auto;
+            min-width: 52px;
+            margin: 3px;
+            padding: 9px 6px;
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        #keypad button:active { background: #1f6feb; color: #fff; }
+    </style>
+
+    <script type="module" crossorigin="anonymous">
+        import RFB from './core/rfb.js';
+
+        let rfb;
+        let desktopName = '';
+        let keyboardVisible = false;
+
+        function status(text) {
+            document.getElementById('status').textContent = text;
+        }
+
+        function setConnected() {
+            status('已连接：' + (desktopName || 'AI Studio') + '（单击=点击，双指缩放）');
+            document.getElementById('keyboardBtn').disabled = false;
+        }
+
+        function disconnectedFromServer(e) {
+            status(e.detail.clean ? '连接已断开' : '连接异常关闭，请返回重试');
+        }
+
+        function credentialsAreRequired(e) {
+            const password = prompt('需要 VNC 密码：');
+            rfb.sendCredentials({ password: password });
+        }
+
+        function updateDesktopName(e) {
+            desktopName = e.detail.name;
+        }
+
+        // 读取查询参数；对受保护的参数，App 也可通过 location.hash 传入。
+        function readQueryVariable(name, defaultValue) {
+            const re = new RegExp('.*[?&]' + name + '=([^&#]*)');
+            const match = ''.concat(document.location.href, window.location.hash).match(re);
+            return match ? decodeURIComponent(match[1]) : defaultValue;
+        }
+
+        const host = readQueryVariable('host', window.location.hostname);
+        const port = readQueryVariable('port', window.location.port);
+        const password = readQueryVariable('password');
+        const path = readQueryVariable('path', 'vnc');
+
+        let url = (window.location.protocol === 'https:' ? 'wss' : 'ws') + '://' + host;
+        if (port) {
+            url += ':' + port;
+        }
+        url += '/' + path;
+
+        status('正在连接登录窗口…');
+
+        rfb = new RFB(document.getElementById('screen'), url,
+                      { credentials: { password: password } });
+        rfb.addEventListener('connect', setConnected);
+        rfb.addEventListener('disconnect', disconnectedFromServer);
+        rfb.addEventListener('credentialsrequired', credentialsAreRequired);
+        rfb.addEventListener('desktopname', updateDesktopName);
+
+        // 移动端：铺满屏幕并允许缩放；触摸直接映射为鼠标事件（单击即点击）。
+        rfb.scaleViewport = true;
+        rfb.clipViewport = false;
+        rfb.resizeSession = false;
+
+        // ---- 软键盘：用系统输入法输入，再通过 sentry 输入框取回按键 ----
+        const keyboardInput = document.getElementById('keyboardInput');
+
+        function toggleKeyboard() {
+            keyboardVisible = !keyboardVisible;
+            const btn = document.getElementById('keyboardBtn');
+            const bar = document.getElementById('bottom_bar');
+            if (keyboardVisible) {
+                bar.style.display = 'flex';
+                keyboardInput.value = '';
+                keyboardInput.focus();
+                btn.classList.add('on');
+                btn.textContent = '收起';
+            } else {
+                bar.style.display = 'none';
+                keyboardInput.blur();
+                btn.classList.remove('on');
+                btn.textContent = '键盘';
+            }
+        }
+
+        // 键盘输入框：逐字符发送到 Xvfb；Backspace/Enter 单独处理。
+        keyboardInput.addEventListener('input', (ev) => {
+            const value = keyboardInput.value;
+            keyboardInput.value = '';
+            if (ev.inputType && ev.inputType.startsWith('delete')) {
+                rfb.sendKey(0xff08, 'Backspace'); // XK_BackSpace
+                return;
+            }
+            for (const ch of value) {
+                rfb.sendKey(ch.codePointAt(0));
+            }
+        });
+
+        keyboardInput.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' || ev.keyCode === 13) {
+                rfb.sendKey(0xff0d, 'Enter'); // XK_Return
+                ev.preventDefault();
+            }
+        });
+
+        // 方向键与滚动（用 VNC 滚轮按键事件滚动页面）。
+        function wheel(up) {
+            rfb._accumulatedWheelDeltaY = 0;
+            rfb._handleMouseButton(rfb._mousePos ? rfb._mousePos.x : 0,
+                                   rfb._mousePos ? rfb._mousePos.y : 0,
+                                   true, up ? (1 << 3) : (1 << 4));
+            rfb._handleMouseButton(rfb._mousePos ? rfb._mousePos.x : 0,
+                                   rfb._mousePos ? rfb._mousePos.y : 0,
+                                   false, up ? (1 << 3) : (1 << 4));
+        }
+        function arrow(keysym, code) { rfb.sendKey(keysym, code, true); rfb.sendKey(keysym, code, false); }
+        function bind(id, fn) {
+            const el = document.getElementById(id);
+            if (el) { el.onclick = fn; }
+        }
+        bind('kUp', () => wheel(true));
+        bind('kDown', () => wheel(false));
+        bind('kLeft', () => arrow(0xff51, 'ArrowLeft'));
+        bind('kRight', () => arrow(0xff53, 'ArrowRight'));
+        bind('kTab', () => arrow(0xff09, 'Tab'));
+        bind('kEsc', () => arrow(0xff1b, 'Escape'));
+        bind('kSpace', () => rfb.sendKey(0x0020));
+        bind('kAt', () => rfb.sendKey(0x0040));
+        bind('kDot', () => rfb.sendKey(0x002e));
+        bind('kSlash', () => rfb.sendKey(0x002f));
+        bind('kDash', () => rfb.sendKey(0x002d));
+        bind('kUnder', () => rfb.sendKey(0x005f));
+
+        document.getElementById('sendCtrlAltDel').onclick = () => { rfb.sendCtrlAltDel(); };
+        document.getElementById('reload').onclick = () => window.location.reload();
+        document.getElementById('keyboardBtn').onclick = toggleKeyboard;
+    </script>
+</head>
+
+<body>
+    <div id="top_bar">
+        <div id="status">加载中</div>
+        <div id="actions">
+            <button id="keyboardBtn" type="button">键盘</button>
+            <button id="reload" type="button">重连</button>
+            <button id="sendCtrlAltDel" type="button">Ctrl+Alt+Del</button>
+        </div>
+    </div>
+    <div id="screen"></div>
+    <div id="bottom_bar">
+        <input id="keyboardInput" type="text" autocomplete="off" autocorrect="off"
+               autocapitalize="off" spellcheck="false" placeholder="在此输入文字…">
+        <div id="keypad">
+            <button id="kTab" type="button">Tab</button>
+            <button id="kEsc" type="button">Esc</button>
+            <button id="kUp" type="button">↑</button>
+            <button id="kDown" type="button">↓</button>
+            <button id="kLeft" type="button">←</button>
+            <button id="kRight" type="button">→</button>
+            <button id="kSpace" type="button">空格</button>
+            <button id="kAt" type="button">@</button>
+            <button id="kDot" type="button">.</button>
+            <button id="kSlash" type="button">/</button>
+            <button id="kDash" type="button">-</button>
+            <button id="kUnder" type="button">_</button>
+        </div>
+    </div>
+</body>
+</html>

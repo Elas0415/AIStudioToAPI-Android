@@ -1,0 +1,53 @@
+<resources>
+    <string name="app_name">AIStudioToAPI</string>
+    <string name="notification_channel_name">服务运行状态</string>
+    <string name="notification_title">AIStudioToAPI 运行中</string>
+
+    <string name="menu_reload">刷新页面</string>
+    <string name="menu_restart">重启服务</string>
+    <string name="menu_about">关于</string>
+    <string name="menu_api_key">API 地址与密钥</string>
+    <string name="menu_custom_key">自定义 API Key</string>
+    <string name="menu_logs">查看日志</string>
+    <string name="menu_lan">局域网访问</string>
+    <string name="menu_battery">后台保活设置</string>
+    <string name="menu_login">添加账号（自动登录）</string>
+    <string name="menu_vnc_login">添加账号（VNC 手动登录）</string>
+    <string name="menu_console">命令控制台</string>
+    <string name="menu_import_auth">导入认证文件</string>
+
+    <string name="login_title">添加 Google 账号</string>
+    <string name="login_intro">填写 Google 账号凭据，App 将在后台自动完成登录并生成认证文件。\n\n• 支持：邮箱+密码、标准 TOTP 两步验证、恢复邮箱验证、首次协议确认\n• 不支持：短信验证码、Google Prompt、Passkey、人机验证（此类账号请用「导入认证文件」）\n\n密码仅用于本次登录，不会保存。</string>
+    <string name="import_auth_button">改为导入认证文件（在电脑登录后导入）</string>
+
+    <string name="api_key_hint">SillyTavern / Cherry Studio 等客户端请填写上面的地址，并在 API Key 处填入上面显示的密钥。</string>
+
+    <string name="vnc_login_intro">在 App 内置窗口中完成 Google AI Studio 登录。\n\n• 适用于任意账号：邮箱+密码、短信验证码、Google Prompt、Passkey、人机验证均可手动完成\n• 登录成功后点上方「保存此账号」生成认证文件\n\n这是 WebUI「添加账号」的 App 内置版本（本地 noVNC，无需外网 CDN）。</string>
+
+    <string name="lan_enabled">局域网访问已开启\n其他设备可访问：\nhttp://%1$s:7860/v1\n\n⚠ API 已暴露到局域网，请妥善保管 API Key。</string>
+    <string name="lan_disabled">局域网访问已关闭</string>
+    <string name="lan_no_ip">已开启，但未获取到局域网 IP，请确认已连接 WiFi</string>
+    <string name="lan_title">局域网访问</string>
+    <string name="lan_message">开启后，同一局域网内的其他设备可通过本机 IP 访问 API 和控制台。\n\n默认关闭（仅本机 127.0.0.1 可访问）。\n\n注意：请仅在可信网络中开启。</string>
+    <string name="lan_enable">开启</string>
+    <string name="lan_disable">关闭</string>
+
+    <string name="battery_title">后台保活</string>
+    <string name="battery_message">为防止系统在后台杀死本地服务，建议授予“忽略电池优化”权限。\n\n点击“去设置”后在系统列表中找到本应用并选择“允许”。</string>
+    <string name="battery_go">去设置</string>
+    <string name="battery_ok">已授予电池优化豁免</string>
+    <string name="battery_na">当前系统无需设置</string>
+
+    <string name="logs_clear">清理日志</string>
+    <string name="logs_cleared">日志已清理</string>
+
+    <string name="about_message">AIStudioToAPI Android\n\n后端: AIStudioToAPI v1.3.7 (Node.js 24 arm64, PRoot Ubuntu 24.04)\n浏览器: Camoufox arm64\nAPI: 127.0.0.1:7860\n\n首次使用请点击 WebUI 中的「添加账号」，通过 VNC 完成 Google AI Studio 登录。\n认证数据保存在应用私有目录，重启后无需重新登录。</string>
+
+    <string name="custom_key_title">自定义 API Key</string>
+    <string name="custom_key_message">设置客户端调用本服务时使用的密钥（Authorization: Bearer）。\n\n留空将恢复默认密钥 123456。保存后需要重启服务生效。</string>
+    <string name="custom_key_hint">输入自定义密钥</string>
+    <string name="custom_key_saved">已保存，正在重启服务…</string>
+    <string name="custom_key_empty">已恢复默认密钥，正在重启服务…</string>
+    <string name="download_saved">已下载：%1$s</string>
+    <string name="download_failed">下载失败：%1$s</string>
+</resources>
