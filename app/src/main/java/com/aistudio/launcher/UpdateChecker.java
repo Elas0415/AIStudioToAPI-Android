@@ -134,6 +134,17 @@ public class UpdateChecker {
 
                 env.installBackendUpdate(bundle, haveBundle, tag);
 
+                // The frontend bundle filename is content-hashed and may be cached
+                // by the WebView; clear caches so the patched UI is fetched.
+                handler.post(() -> {
+                    try {
+                        android.webkit.WebView wv = new android.webkit.WebView(activity);
+                        wv.clearCache(true);
+                        wv.destroy();
+                    } catch (Exception ignored) {
+                    }
+                });
+
                 handler.post(() -> {
                     if (bundle.exists()) {
                         bundle.delete();

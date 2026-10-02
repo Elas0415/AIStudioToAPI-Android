@@ -134,7 +134,77 @@ final class RuntimeEnv {
 
         // Re-apply the platform patch so our tweaks survive the update.
         reapplyPatches();
+
+        // The WebUI shows its version from a build-time constant baked into the
+        // bundled frontend JS, not from package.json. Since a source overlay does
+        // not rebuild ui/dist, rewrite that constant so the UI reflects the new
+        // backend version.
+        patchFrontendVersion(tag);
     }
+
+    /**
+     * Rewrites the hard-coded "current version" string inside the built frontend
+     * bundle (Vite injects it as e.g. {@code ce="1.3.7"}). This keeps the WebUI
+     * version display in sync after an in-app backend update that does not
+     * rebuild ui/dist.
+     */
+    private void patchFrontendVersion(String newVersion) throws IOException {
+        if (newVersion == null) {
+            return;
+        }
+        String clean = newVersion.trim().replaceAll("^[vV]", "");
+        if (clean.isEmpty()) {
+            return;
+        }
+        File assets = new File(a2aDir, "ui/dist/assets");
+        if (!assets.isDirectory()) {
+            return;
+        }
+        File[] jsFiles = assets.listFiles((d, n) -> n.endsWith(".js"));
+        if (jsFiles == null) {
+            return;
+        }
+        // Vite compiles the current-version constant to `ce="1.3.7"` and the latest
+        // version fallback to `be.latestVersion||"1.3.7"`. Target only those shapes
+        // so we don't clobber unrelated version strings in the bundle.
+        java.util.regex.Pattern[] patterns = {
+                java.util.regex.Pattern.compile("(\\bce\\s*=\\s*)([\"'])(?:v)?\\d+\\.\\d+\\.\\d+\\2"),
+                java.util.regex.Pattern.compile(
+                        "(latestVersion\\s*\\|\\|\\s*)([\"'])(?:v)?\\d+\\.\\d+\\.\\d+\\2"),
+        };
+        for (File f : jsFiles) {
+            try {
+                String content = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+                String updated = content;
+                int total = 0;
+                for (java.util.regex.Pattern p : patterns) {
+                    java.util.regex.Matcher m = p.matcher(updated);
+                    StringBuffer sb = new StringBuffer();
+                    int count = 0;
+                    while (m.find()) {
+                        String prefix = m.group(1);
+                        String quote = m.group(2);
+                        m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(
+                                prefix + quote + clean + quote));
+                        count++;
+                    }
+                    if (count > 0) {
+                        m.appendTail(sb);
+                        updated = sb.toString();
+                        total += count;
+                    }
+                }
+                if (total > 0) {
+                    Files.write(f.toPath(), updated.getBytes(StandardCharsets.UTF_8));
+                    Log.i(TAG, "patched frontend version in " + f.getName()
+                            + " (" + total + " occurrence(s)) -> " + clean);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "patchFrontendVersion failed for " + f.getName(), e);
+            }
+        }
+    }
+
 
     private void reapplyPatches() {
         // Auth patch (tuned delays + IPv4) may already be deployed via ensureReady;
