@@ -22,6 +22,7 @@ import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -49,10 +50,12 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "AIStudioActivity";
     private static final int PORT = 7860;
     private static final String BASE_URL = "http://127.0.0.1:7860/";
+    private static final int REQ_FILE_CHOOSER = 42001;
 
     private WebView webView;
     private View loading;
     private TextView loadingText;
+    private ValueCallback<Uri[]> pendingFileCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
 
@@ -86,6 +89,32 @@ public class MainActivity extends AppCompatActivity {
             public boolean onConsoleMessage(ConsoleMessage msg) {
                 Log.i("AIStudioWeb", msg.message() + " @" + msg.lineNumber());
                 return true;
+            }
+
+            // Android WebView does nothing when a page opens <input type="file">
+            // unless onShowFileChooser is implemented. The WebUI's "导入凭证"
+            // (auth import / batch upload) relies on it, so we wire it up to SAF.
+            @Override
+            public boolean onShowFileChooser(WebView webView,
+                                             ValueCallback<Uri[]> filePathCallback,
+                                             FileChooserParams fileChooserParams) {
+                if (pendingFileCallback != null) {
+                    pendingFileCallback.onReceiveValue(null);
+                }
+                pendingFileCallback = filePathCallback;
+                try {
+                    Intent chooser = fileChooserParams.createIntent();
+                    chooser.addCategory(Intent.CATEGORY_OPENABLE);
+                    // Allow selecting multiple .json/.zip auth files.
+                    chooser.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                    startActivityForResult(chooser, REQ_FILE_CHOOSER);
+                    return true;
+                } catch (Exception e) {
+                    Log.w(TAG, "file chooser failed", e);
+                    pendingFileCallback = null;
+                    toast("无法打开文件选择器: " + e.getMessage());
+                    return false;
+                }
             }
         });
 
@@ -181,6 +210,9 @@ public class MainActivity extends AppCompatActivity {
         int id = item.getItemId();
         if (id == R.id.action_reload) {
             webView.reload();
+            return true;
+        } else if (id == R.id.action_update) {
+            new UpdateChecker(this).check();
             return true;
         } else if (id == R.id.action_restart) {
             restartBackendAndReload();
@@ -509,17 +541,33 @@ public class MainActivity extends AppCompatActivity {
 
     private static final String BLOB_HOOK_JS =
             "(function(){if(window.__a2aBlobHook)return;window.__a2aBlobHook=true;"
+            // Patch HTMLAnchorElement.prototype.click so any programmatic click on
+            // an <a download> with a blob:/data: URL is captured. This is far more
+            // reliable than a document-level click listener, because the WebUI
+            // creates a detached anchor and calls a.click() directly.
+            + "var origClick=HTMLAnchorElement.prototype.click;"
+            + "HTMLAnchorElement.prototype.click=function(){"
+            + "try{var href=this.href||'';"
+            + "if((href.indexOf('blob:')===0||href.indexOf('data:')===0)&&this.hasAttribute('download')){"
+            + "window.__a2aSaveBlob(href,this.getAttribute('download')||'download');return;}"
+            + "}catch(e){}"
+            + "return origClick.apply(this,arguments);};"
+            // Also catch real user clicks / synthetic events on links.
             + "document.addEventListener('click',function(ev){"
             + "var a=ev.target&&ev.target.closest?ev.target.closest('a[download]'):null;"
             + "if(!a)return;var href=a.href||'';"
             + "if(href.indexOf('blob:')===0||href.indexOf('data:')===0){"
             + "ev.preventDefault();ev.stopPropagation();"
+            + "window.__a2aSaveBlob(href,a.getAttribute('download')||'download');"
+            + "}},true);"
+            // Shared helper: fetch the blob and hand its base64 to the native bridge.
+            + "window.__a2aSaveBlob=function(href,name){"
             + "try{fetch(href).then(function(r){return r.blob();}).then(function(b){"
             + "var fr=new FileReader();"
-            + "fr.onload=function(){AndroidDownload.saveBase64(fr.result,a.getAttribute('download')||'download');};"
+            + "fr.onload=function(){AndroidDownload.saveBase64(fr.result,name);};"
             + "fr.readAsDataURL(b);}).catch(function(e){AndroidDownload.onError(String(e));});"
-            + "}catch(e){AndroidDownload.onError(String(e));}"
-            + "}},true);})();";
+            + "}catch(e){AndroidDownload.onError(String(e));}};"
+            + "})();";
 
     private void injectBlobHook(WebView view) {
         view.evaluateJavascript(BLOB_HOOK_JS, null);
@@ -550,14 +598,33 @@ public class MainActivity extends AppCompatActivity {
                         ? Base64.decode(payload, Base64.DEFAULT)
                         : payload.getBytes(StandardCharsets.UTF_8);
 
-                String name = (suggestedName == null || suggestedName.isEmpty())
-                        ? "download.bin" : suggestedName;
-                java.io.File dir = new RuntimeEnv(MainActivity.this).downloadsDir();
-                if (!dir.exists() && !dir.mkdirs()) {
-                    throw new IOException("cannot create dir");
+                String name = sanitizeName((suggestedName == null || suggestedName.isEmpty())
+                        ? "download.bin" : suggestedName);
+
+                // Prefer the public Downloads directory so the user can find the file
+                // with a file manager. Fall back to app-private storage if the public
+                // dir is unavailable (scoped-storage edge cases).
+                java.io.File out = null;
+                try {
+                    java.io.File pub = new java.io.File(
+                            Environment.getExternalStoragePublicDirectory(
+                                    Environment.DIRECTORY_DOWNLOADS), name);
+                    java.io.File parent = pub.getParentFile();
+                    if (parent != null && !parent.exists()) {
+                        parent.mkdirs();
+                    }
+                    Files.write(pub.toPath(), bytes);
+                    out = pub;
+                    notifyMediaScanner(pub);
+                } catch (Exception pubErr) {
+                    Log.w(TAG, "public download failed, using app dir", pubErr);
+                    java.io.File dir = new RuntimeEnv(MainActivity.this).downloadsDir();
+                    if (!dir.exists() && !dir.mkdirs()) {
+                        throw new IOException("cannot create dir");
+                    }
+                    out = new java.io.File(dir, name);
+                    Files.write(out.toPath(), bytes);
                 }
-                java.io.File out = new java.io.File(dir, name);
-                Files.write(out.toPath(), bytes);
                 toast(getString(R.string.download_saved, name));
             } catch (Exception e) {
                 Log.w(TAG, "saveBase64 failed", e);
@@ -571,9 +638,44 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private static String sanitizeName(String raw) {
+        String name = raw.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+        if (name.isEmpty() || name.equals(".") || name.equals("..")) {
+            name = "download.bin";
+        }
+        return name;
+    }
+
+    private void notifyMediaScanner(java.io.File f) {
+        try {
+            android.media.MediaScannerConnection.scanFile(
+                    this, new String[]{f.getAbsolutePath()}, null, null);
+        } catch (Exception ignored) {
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_FILE_CHOOSER) {
+            if (pendingFileCallback != null) {
+                Uri[] results = null;
+                if (resultCode == RESULT_OK && data != null) {
+                    if (data.getClipData() != null) {
+                        int count = data.getClipData().getItemCount();
+                        results = new Uri[count];
+                        for (int i = 0; i < count; i++) {
+                            results[i] = data.getClipData().getItemAt(i).getUri();
+                        }
+                    } else if (data.getData() != null) {
+                        results = new Uri[]{data.getData()};
+                    }
+                }
+                pendingFileCallback.onReceiveValue(results);
+                pendingFileCallback = null;
+            }
+            return;
+        }
         if (AuthImportHelper.handleResult(this, requestCode, resultCode, data)) {
             return;
         }

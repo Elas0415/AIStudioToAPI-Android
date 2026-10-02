@@ -166,11 +166,12 @@
 
         // ---- 软键盘：用系统输入法输入，再通过 sentry 输入框取回按键 ----
         const keyboardInput = document.getElementById('keyboardInput');
+        const bar = document.getElementById('bottom_bar');
+        const screenEl = document.getElementById('screen');
 
         function toggleKeyboard() {
             keyboardVisible = !keyboardVisible;
             const btn = document.getElementById('keyboardBtn');
-            const bar = document.getElementById('bottom_bar');
             if (keyboardVisible) {
                 bar.style.display = 'flex';
                 keyboardInput.value = '';
@@ -236,6 +237,52 @@
         document.getElementById('sendCtrlAltDel').onclick = () => { rfb.sendCtrlAltDel(); };
         document.getElementById('reload').onclick = () => window.location.reload();
         document.getElementById('keyboardBtn').onclick = toggleKeyboard;
+
+        // ---- 移动端：轻触屏幕即唤出系统输入法，接近手机原生体验 ----
+        // 开启「自动键盘」后，每次点击远程画面都会聚焦隐藏输入框，从而弹出 IME。
+        // 这样点击网页里的输入框时无需先手动打开键盘。
+        let autoKeyboard = true;
+
+        function openIme() {
+            // 保持输入框在可视区内，移动浏览器才会弹出软键盘。
+            if (bar.style.display !== 'flex') {
+                bar.style.display = 'flex';
+            }
+            keyboardInput.style.height = '1px';
+            keyboardInput.focus({ preventScroll: true });
+        }
+
+        function closeIme() {
+            keyboardInput.blur();
+            keyboardInput.style.height = '';
+        }
+
+        // 在 canvas 上监听 pointerup（noVNC 用 gesture 处理点击，pointerup 仍会触发）
+        screenEl.addEventListener('pointerup', () => {
+            if (autoKeyboard) {
+                openIme();
+            }
+        }, true);
+
+        // 输入法弹出时，把画面区域上移，避免遮挡（简单处理：聚焦时滚动到顶）
+        keyboardInput.addEventListener('focus', () => {
+            keyboardInput.style.height = '';
+        });
+
+        // 自动键盘开关
+        const autoBtn = document.getElementById('autoKeyboardBtn');
+        function updateAutoBtn() {
+            autoBtn.classList.toggle('on', autoKeyboard);
+            autoBtn.textContent = autoKeyboard ? '自动键盘✓' : '自动键盘';
+        }
+        autoBtn.onclick = () => {
+            autoKeyboard = !autoKeyboard;
+            updateAutoBtn();
+            if (!autoKeyboard) {
+                closeIme();
+            }
+        };
+        updateAutoBtn();
     </script>
 </head>
 
@@ -243,6 +290,7 @@
     <div id="top_bar">
         <div id="status">加载中</div>
         <div id="actions">
+            <button id="autoKeyboardBtn" type="button">自动键盘</button>
             <button id="keyboardBtn" type="button">键盘</button>
             <button id="reload" type="button">重连</button>
             <button id="sendCtrlAltDel" type="button">Ctrl+Alt+Del</button>

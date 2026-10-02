@@ -17,6 +17,11 @@ require("dotenv").config({ path: path.resolve(__dirname, "..", "..", ".env") });
 const FIREFOX_DOH_DISABLED_PREFS = {
     "network.trr.mode": 5,
     "network.trr.uri": "",
+    // Force IPv4: PRoot/Android networks may advertise IPv6 DNS without a
+    // working IPv6 route, which stalls Google logins.
+    "network.dns.disableIPv6": true,
+    "network.dns.preferIPv4": true,
+    "network.http.fast-fallback-to-IPv4": true,
 };
 
 // Initialize language from environment variable passed by setupAuth.js

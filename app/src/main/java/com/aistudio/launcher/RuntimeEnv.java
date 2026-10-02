@@ -56,6 +56,239 @@ final class RuntimeEnv {
         return a2aDir;
     }
 
+    /** Reads the currently installed backend version from the rootfs package.json. */
+    String installedBackendVersion() {
+        try {
+            File pkg = new File(a2aDir, "package.json");
+            if (pkg.exists()) {
+                String json = new String(Files.readAllBytes(pkg.toPath()), StandardCharsets.UTF_8);
+                int i = json.indexOf("\"version\"");
+                if (i >= 0) {
+                    int s = json.indexOf('"', json.indexOf(':', i) + 1) + 1;
+                    int e = json.indexOf('"', s);
+                    return json.substring(s, e);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "unknown";
+    }
+
+    /**
+     * Installs a backend update into the rootfs /opt/a2a.
+     *
+     * When {@code haveBundle} is true the file is a gzip'd tar containing a full
+     * backend (source + node_modules + ui/dist) and is extracted over /opt/a2a,
+     * preserving configs/, data/ and auth files. Otherwise we fetch the upstream
+     * source tarball for {@code tag} and overlay only the JS sources (src/,
+     * scripts/, main.js, configs/, vite.config.js), keeping the existing
+     * node_modules and ui/dist.
+     */
+    void installBackendUpdate(File bundle, boolean haveBundle, String tag) throws IOException {
+        // Always back up configs/auth so a botched update can't lose accounts.
+        File auth = authDir();
+        File authBackup = new File(base, "auth-backup");
+        if (auth.exists()) {
+            deleteRecursive(authBackup);
+            copyDir(auth, authBackup);
+        }
+
+        File tmp = new File(base, "update-tmp");
+        deleteRecursive(tmp);
+        if (!tmp.mkdirs()) {
+            throw new IOException("cannot create update temp dir");
+        }
+
+        if (haveBundle) {
+            extractTarGz(bundle, tmp);
+            // Bundle may wrap everything in a single top folder; find the dir that
+            // contains package.json.
+            File src = findDirWithPackageJson(tmp);
+            if (src == null) {
+                throw new IOException("bundle missing package.json");
+            }
+            overlayTree(src, a2aDir);
+        } else {
+            // Download upstream source tarball and overlay JS only.
+            File tarball = new File(base, "a2a-src-" + tag + ".tar.gz");
+            downloadUrl("https://github.com/iBUHub/AIStudioToAPI/archive/refs/tags/"
+                    + tag + ".tar.gz", tarball);
+            extractTarGz(tarball, tmp);
+            tarball.delete();
+            File src = findDirWithPackageJson(tmp);
+            if (src == null) {
+                throw new IOException("source archive missing package.json");
+            }
+            overlaySourceOnly(src, a2aDir);
+        }
+
+        deleteRecursive(tmp);
+
+        // Restore auth if the update removed it.
+        if (authBackup.exists() && (!auth.exists() || auth.list() == null || auth.list().length == 0)) {
+            if (!auth.exists()) {
+                auth.mkdirs();
+            }
+            copyDir(authBackup, auth);
+        }
+
+        // Re-apply the platform patch so our tweaks survive the update.
+        reapplyPatches();
+    }
+
+    private void reapplyPatches() {
+        // Auth patch (tuned delays + IPv4) may already be deployed via ensureReady;
+        // nothing to do here beyond ensuring the file is executable.
+        new File(a2aDir, "start-a2a.sh").setExecutable(true, false);
+    }
+
+    /** Finds a directory (at any depth <= 3) containing a package.json. */
+    private static File findDirWithPackageJson(File root) {
+        if (root == null || !root.isDirectory()) {
+            return null;
+        }
+        if (new File(root, "package.json").exists()) {
+            return root;
+        }
+        File[] children = root.listFiles();
+        if (children == null) {
+            return null;
+        }
+        for (File c : children) {
+            File found = findDirWithPackageJson(c);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    /** Copies all entries of src into dst, overwriting files but keeping extras. */
+    private static void overlayTree(File src, File dst) throws IOException {
+        File[] children = src.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File c : children) {
+            File target = new File(dst, c.getName());
+            if (c.isDirectory()) {
+                if (!target.exists() && !target.mkdirs()) {
+                    throw new IOException("cannot create " + target);
+                }
+                overlayTree(c, target);
+            } else {
+                copyFile(c, target);
+            }
+        }
+    }
+
+    /** Overlays only backend JS sources, preserving node_modules and ui/dist. */
+    private static void overlaySourceOnly(File src, File dst) throws IOException {
+        String[] names = {"src", "scripts", "configs", "main.js", "package.json", "vite.config.js"};
+        for (String name : names) {
+            File s = new File(src, name);
+            if (!s.exists()) {
+                continue;
+            }
+            File t = new File(dst, name);
+            if (s.isDirectory()) {
+                if (!t.exists() && !t.mkdirs()) {
+                    throw new IOException("cannot create " + t);
+                }
+                overlayTree(s, t);
+            } else {
+                copyFile(s, t);
+            }
+        }
+    }
+
+    private static void copyFile(File src, File dst) throws IOException {
+        File parent = dst.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IOException("cannot create " + parent);
+        }
+        Files.copy(src.toPath(), dst.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+    }
+
+    private static void copyDir(File src, File dst) throws IOException {
+        if (!dst.exists() && !dst.mkdirs()) {
+            throw new IOException("cannot create " + dst);
+        }
+        File[] children = src.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File c : children) {
+            File t = new File(dst, c.getName());
+            if (c.isDirectory()) {
+                copyDir(c, t);
+            } else {
+                Files.copy(c.toPath(), t.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
+    private static void downloadUrl(String urlStr, File dest) throws IOException {
+        java.net.HttpURLConnection conn =
+                (java.net.HttpURLConnection) new java.net.URL(urlStr).openConnection();
+        conn.setRequestProperty("User-Agent", "AIStudioToAPI-Android");
+        conn.setInstanceFollowRedirects(true);
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(60000);
+        int code = conn.getResponseCode();
+        if (code != 200) {
+            throw new IOException("HTTP " + code + " for " + urlStr);
+        }
+        try (java.io.InputStream in = conn.getInputStream();
+             java.io.OutputStream out = new java.io.FileOutputStream(dest)) {
+            byte[] buf = new byte[128 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    /** Extracts a gzip'd tar using the device's toybox tar. */
+    private void extractTarGz(File archive, File dest) throws IOException {
+        String tar = findTar();
+        if (tar == null) {
+            throw new IOException("no tar available on device");
+        }
+        ProcessBuilder pb = new ProcessBuilder(tar, "xzf", archive.getAbsolutePath(),
+                "-C", dest.getAbsolutePath());
+        pb.redirectErrorStream(true);
+        Process p;
+        try {
+            p = pb.start();
+        } catch (IOException e) {
+            throw new IOException("无法启动 tar: " + e.getMessage(), e);
+        }
+        StringBuilder out = new StringBuilder();
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (out.length() < 4000) {
+                    out.append(line).append('\n');
+                }
+            }
+        }
+        try {
+            int code = p.waitFor();
+            if (code != 0) {
+                throw new IOException("tar exit " + code + ": " + out);
+            }
+        } catch (InterruptedException e) {
+            p.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw new IOException("tar interrupted");
+        }
+    }
+
     File authDir() {
         return new File(a2aDir, "configs/auth");
     }
@@ -309,21 +542,25 @@ final class RuntimeEnv {
     }
 
     /**
-     * Overlays our patched auth scripts onto the rootfs.
+     * Overlays our patched backend scripts onto the rootfs.
      *
      * The bundled rootfs.tar.zst is a prebuilt asset, so we cannot edit its
-     * files in place. The stock scripts/auth/saveAuth.js polls with 1-5s of
-     * artificial human-like delays, making account-add take minutes. We ship a
-     * conservatively tuned copy (randomWait 300-800ms, poll interval 400ms) and
-     * overlay it on every start so upgrades apply. The patch is idempotent.
+     * files in place. We overlay:
+     *   - scripts/auth/saveAuth.js: tuned delays (randomWait 300-800ms) + IPv4 prefs
+     *   - src/core/BrowserManager.js: IPv4-forcing Firefox prefs
+     * The patch is idempotent and re-applied on every start so upgrades apply.
      */
     private void deployAuthPatch(AssetManager am) throws IOException {
-        File dest = new File(a2aDir, "scripts/auth/saveAuth.js");
+        overlay(am, "patches/auth/saveAuth.js", new File(a2aDir, "scripts/auth/saveAuth.js"));
+        overlay(am, "patches/core/BrowserManager.js", new File(a2aDir, "src/core/BrowserManager.js"));
+    }
+
+    private void overlay(AssetManager am, String assetPath, File dest) throws IOException {
         File parent = dest.getParentFile();
         if (parent != null && !parent.exists() && !parent.mkdirs()) {
             throw new IOException("cannot create " + parent);
         }
-        copyAsset(am, "patches/auth/saveAuth.js", dest);
+        copyAsset(am, assetPath, dest);
     }
 
     /**

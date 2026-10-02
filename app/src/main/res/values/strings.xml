@@ -4,6 +4,7 @@
     <string name="notification_title">AIStudioToAPI 运行中</string>
 
     <string name="menu_reload">刷新页面</string>
+    <string name="menu_update">检查更新</string>
     <string name="menu_restart">重启服务</string>
     <string name="menu_about">关于</string>
     <string name="menu_api_key">API 地址与密钥</string>
