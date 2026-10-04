@@ -19,9 +19,29 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file("keystore/aistudio-release.jks")
+            storePassword = "aistudio123"
+            keyAlias = "aistudio"
+            keyPassword = "aistudio123"
+            // Android 14+ / 16 require a v2+ signature; enable v1+v2+v3 for
+            // maximum compatibility with OEM installers that verify strictly.
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
+
     buildTypes {
+        debug {
+            // Sign debug builds with the same dedicated key so that a manually
+            // installed APK always matches and passes strict signature checks.
+            signingConfig = signingConfigs.getByName("release")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
