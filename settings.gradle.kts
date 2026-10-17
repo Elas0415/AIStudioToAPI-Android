@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "AIStudioToAPI-Android"
 include(":app")
+include(":appgo")

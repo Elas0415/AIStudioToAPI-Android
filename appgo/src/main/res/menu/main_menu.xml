@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/action_reload"
+        android:title="@string/menu_reload"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_update"
+        android:title="@string/menu_update"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_restart"
+        android:title="@string/menu_restart"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_stop"
+        android:title="@string/menu_stop"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_lan"
+        android:title="@string/menu_lan"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_battery"
+        android:title="@string/menu_battery"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_about"
+        android:title="@string/menu_about"
+        app:showAsAction="never" />
+
+</menu>

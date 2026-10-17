@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>正在建立登录会话</title>
+    <style>
+        html, body {
+            margin: 0;
+            height: 100%;
+            background: #0d1117;
+            color: #c9d1d9;
+            font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #msg { padding: 20px; font-size: 14px; text-align: center; }
+    </style>
+</head>
+<body>
+<div id="msg">正在建立登录会话…</div>
+<script>
+    // 由 App 以真实同源页面加载（非 data: URL），确保 Cookie 与 fetch 凭证正常。
+    // 流程：用 App 保存的 API Key 登录 → 启动后端 VNC 会话 → 回调 Android 加载 noVNC。
+    (async function () {
+        const bridge = window.AndroidBridge;
+        const q = new URLSearchParams(location.search);
+        const w = parseInt(q.get('w') || '800', 10);
+        const h = parseInt(q.get('h') || '1200', 10);
+        try {
+            const key = bridge.getApiKey();
+            await fetch('/login', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'apiKey=' + encodeURIComponent(key)
+            });
+            const r = await fetch('/api/vnc/sessions', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ width: w, height: h })
+            });
+            if (!r.ok) {
+                bridge.onVncError('启动登录窗口失败 (HTTP ' + r.status + ')');
+                return;
+            }
+            bridge.onSessionReady();
+        } catch (e) {
+            bridge.onVncError(String(e));
+        }
+    })();
+</script>
+</body>
+</html>

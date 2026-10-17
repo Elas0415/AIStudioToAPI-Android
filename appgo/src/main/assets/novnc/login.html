@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!--
+  The page is loaded in a WebView that the app sizes to the remote screen's
+  aspect ratio, so `width=device-width` gives noVNC a container with exactly the
+  framebuffer's shape: autoscale then fills it completely (no letterbox, no
+  cropping). Zooming is done by the native PinchZoomLayout, which resizes this
+  WebView, so the page itself stays at a fixed 1:1 CSS scale.
+-->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>登录窗口</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  /* Do not style the canvas: noVNC sets its size inline from the fit scale,
+     and overriding it stretches the remote desktop out of shape. */
+  #screen { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
+  #bar {
+    position: fixed; right: 8px; bottom: 8px; z-index: 10;
+    display: flex; gap: 6px; opacity: 0.85;
+  }
+  #bar button {
+    font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid #30363D;
+    background: #161B22; color: #C9D1D9;
+  }
+  #status {
+    position: fixed; left: 0; top: 0; right: 0; z-index: 9;
+    font: 12px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #C9D1D9; background: rgba(13,17,23,0.9); padding: 4px 10px;
+    text-align: center;
+  }
+  #status.ok { background: rgba(22,82,45,0.9); }
+</style>
+</head>
+<body>
+<div id="screen"></div>
+<div id="status">正在连接登录窗口…</div>
+<div id="bar">
+  <button id="btnType" title="向远端发送文本">⌨ 输入</button>
+  <button id="btnReconnect">重连</button>
+</div>
+
+<script type="module">
+import RFB from './core/rfb.js';
+
+const statusEl = document.getElementById('status');
+let rfb = null;
+
+function setStatus(text, ok) {
+  statusEl.textContent = text;
+  statusEl.className = ok ? 'ok' : '';
+  statusEl.style.display = text ? 'block' : 'none';
+}
+
+function wsUrl() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  return proto + '://' + location.host + '/websockify';
+}
+
+function connect() {
+  setStatus('正在连接登录窗口…', false);
+  try {
+    rfb = new RFB(document.getElementById('screen'), wsUrl(), {
+      credentials: { password: '' },
+    });
+    // Fit the whole remote desktop into this view; the app keeps the view at
+    // the remote screen's aspect ratio, so "fit" means "fill". The user zooms
+    // with two fingers (handled natively, outside this page).
+    rfb.scaleViewport = true;
+    rfb.clipViewport = false;
+    rfb.resizeSession = false;
+    rfb.viewOnly = false;
+    rfb.addEventListener('connect', () => {
+      setStatus('已连接，请在此窗口完成 Google 登录', true);
+      setTimeout(() => setStatus('', true), 4000);
+      rfb.focus();
+    });
+    rfb.addEventListener('disconnect', (e) => {
+      const clean = e.detail && e.detail.clean;
+      setStatus(clean ? '连接已关闭' : '连接断开，可点击「重连」重试', false);
+    });
+  } catch (err) {
+    setStatus('连接失败：' + err.message, false);
+  }
+}
+
+const XK_SHIFT = 0xFFE1;
+const SHIFTED = {
+  '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7',
+  '*': '8', '(': '9', ')': '0', '_': '-', '+': '=', '{': '[', '}': ']',
+  '|': '\\', ':': ';', '"': "'", '<': ',', '>': '.', '?': '/', '~': '`',
+};
+
+function tapKey(keysym) {
+  rfb.sendKey(keysym, null, true);
+  rfb.sendKey(keysym, null, false);
+}
+
+function typeChar(ch) {
+  let base = ch;
+  let shift = false;
+  if (/[A-Z]/.test(ch)) {
+    base = ch.toLowerCase();
+    shift = true;
+  } else if (SHIFTED[ch]) {
+    base = SHIFTED[ch];
+    shift = true;
+  }
+  if (shift) {
+    rfb.sendKey(XK_SHIFT, 'ShiftLeft', true);
+  }
+  tapKey(base.charCodeAt(0));
+  if (shift) {
+    rfb.sendKey(XK_SHIFT, 'ShiftLeft', false);
+  }
+}
+
+function sendText(text) {
+  for (const ch of text) {
+    if (ch === '\n') {
+      tapKey(0xFF0D); // Return
+    } else {
+      typeChar(ch);
+    }
+    // Small delay keeps Camoufox's key handling from dropping fast input.
+  }
+}
+
+document.getElementById('btnType').addEventListener('click', () => {
+  const text = window.prompt('输入要发送到登录窗口的文本（逐字符发送，回车会作为 Enter）：', '');
+  if (text) {
+    sendText(text);
+    setStatus('已发送 ' + text.length + ' 个字符', true);
+    setTimeout(() => setStatus('', true), 2000);
+  }
+});
+
+document.getElementById('btnReconnect').addEventListener('click', () => {
+  if (rfb) {
+    try { rfb.disconnect(); } catch (e) {}
+  }
+  setTimeout(connect, 300);
+});
+
+connect();
+</script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 # ---- Build outputs ----
 /app/build/
+/appgo/build/
 /build/
 /.gradle/
 /.idea/
@@ -15,6 +16,8 @@ local.properties
 # The prebuilt Ubuntu rootfs is ~823MB and exceeds GitHub's 100MB file limit.
 # It is published as a GitHub Release asset instead of being committed.
 /app/src/main/assets/rootfs.tar.zst
+# Same for the :appgo (Go backend) runtime, built by scripts/build-rootfs-go.sh.
+/appgo/src/main/assets/rootfs.tar.zst
 
 # ---- OS / editor cruft ----
 .DS_Store

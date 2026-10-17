@@ -1,0 +1,10 @@
+#!/bin/bash
+# Wrapper for Xvfb inside the AIStudioToAPI Android proot runtime.
+#
+# Android SELinux forbids the link() syscall inside app-private storage, so
+# Xorg cannot create its server lock file (/tmp/.X99-lock) and aborts with:
+#   "Linking lock file (/tmp/.X99-lock) in place failed: Permission denied"
+# The backend (src/auth/CreateAuth.js) spawns "Xvfb" via PATH without -nolock;
+# this wrapper (placed in /usr/local/bin, which is first on PATH) injects the
+# -nolock flag. proot runs as fake-root so the root-only restriction is met.
+exec /usr/bin/Xvfb "$@" -nolock

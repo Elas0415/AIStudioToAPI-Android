@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AIStudio2API</string>
+
+    <string name="menu_reload">刷新页面</string>
+    <string name="menu_update">检查原项目更新</string>
+    <string name="menu_restart">重启服务</string>
+    <string name="menu_stop">停止服务</string>
+    <string name="menu_lan">局域网访问</string>
+    <string name="menu_battery">后台保活设置</string>
+    <string name="menu_about">关于</string>
+
+    <string name="notification_channel_name">本地服务状态</string>
+    <string name="notification_title">AIStudio2API 本地服务</string>
+
+    <!-- 登录窗口（点网页里的「浏览器登录」时自动切过去） -->
+    <string name="login_overlay_title">浏览器登录</string>
+    <string name="login_overlay_back">返回界面</string>
+    <string name="login_overlay_fit">适配</string>
+    <string name="login_overlay_preparing">正在打开浏览器…</string>
+    <string name="login_overlay_ready">整个桌面已适配屏幕，双指缩放可放大</string>
+    <string name="login_overlay_unavailable">虚拟桌面未就绪，无法显示登录窗口</string>
+    <string name="login_overlay_done">登录流程已结束</string>
+    <string name="login_overlay_failed">登录未完成</string>
+    <string name="login_overlay_background">登录仍在后台进行，完成后会自动刷新界面</string>
+
+    <string name="lan_title">局域网访问</string>
+    <string name="lan_message">开启后服务监听 0.0.0.0，同一 Wi-Fi 下的其他设备可访问。会自动开启管理端登录并生成 API Key。</string>
+    <string name="lan_enable">开启</string>
+    <string name="lan_disable">关闭</string>
+    <string name="lan_enabled">已开启局域网访问\n地址：http://%1$s:2048\n请在管理端设置管理员密码。</string>
+    <string name="lan_no_ip">已开启，但未获取到局域网 IP，请确认已连接 Wi-Fi。</string>
+    <string name="lan_disabled">已关闭局域网访问</string>
+
+    <string name="battery_title">后台保活设置</string>
+    <string name="battery_message">将本应用加入电池优化白名单，避免服务在后台被系统杀掉。\n建议同时允许自启动。</string>
+    <string name="battery_go">去设置</string>
+    <string name="battery_ok">已在电池优化白名单中</string>
+    <string name="battery_na">无法打开电池优化设置，请到「系统设置 → 电池」中手动将本应用设为「不受限制」。</string>
+
+    <string name="download_saved">已保存到下载目录：%1$s</string>
+    <string name="download_failed">下载失败：%1$s</string>
+
+    <string name="about_message">AIStudio2API Android 启动器\n\n将 Mag1cFall/AIStudio2API（Go）通过 PRoot + Ubuntu 24.04 arm64 运行环境打包为 Android 应用。\n\n界面以桌面浏览器方式打开，可直接缩放；点击网页里的「浏览器登录」会自动切到内置浏览器窗口完成 Google 登录。\n\n上游项目采用 MIT 许可证。本应用仅做 Android 打包与平台适配，非官方发布。</string>
+</resources>

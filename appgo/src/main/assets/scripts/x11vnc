@@ -1,0 +1,10 @@
+#!/bin/bash
+# Wrapper for x11vnc inside the AIStudioToAPI Android proot runtime.
+#
+# Android kernels used by some devices (e.g. vivo) do not implement the
+# SysV shared-memory syscalls x11vnc uses by default, so it aborts with:
+#   "shmget(scanline) failed: Function not implemented"
+# The backend (src/auth/CreateAuth.js) spawns "x11vnc" via PATH without -noshm;
+# this wrapper (placed in /usr/local/bin, which is first on PATH) injects the
+# -noshm flag so x11vnc falls back to reading the framebuffer directly.
+exec /usr/bin/x11vnc "$@" -noshm
