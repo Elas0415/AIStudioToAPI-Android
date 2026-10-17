@@ -525,6 +525,17 @@ final class RuntimeEnv {
             throw new IOException("cannot create backend dir");
         }
         String host = lan ? "0.0.0.0" : LOOPBACK;
+        // 局域网访问必须同时开启管理端登录：上游控制台默认只接受本机请求，
+        // 其他设备会收到 control_plane_forbidden（"enable console sign-in for
+        // remote access"）。密码由 ensureAppConfig() 生成并持久化，和开启时
+        // 弹窗里展示的、以及「局域网访问」对话框里显示的完全一致。
+        // 关闭局域网时保持免登录，本机 WebView 打开即可用。
+        String admin = adminPassword();
+        if (lan && (admin == null || admin.isEmpty())) {
+            admin = randomToken(16);
+            writeAppConfig(true, apiKey, admin);
+        }
+        boolean adminAuth = lan && admin != null && !admin.isEmpty();
         StringBuilder sb = new StringBuilder();
         sb.append("# 由 Android 启动器生成，修改后重启服务生效\n");
         sb.append("AISTUDIO_AUTH_STATES=auth\n");
@@ -534,10 +545,9 @@ final class RuntimeEnv {
         sb.append("LOG_FILE=true\n");
         sb.append("LOG_MAX_TOTAL_MB=200\n");
         sb.append("WAA_BACKEND=camoufox\n");
-        // No管理端账号密码：开启局域网访问后直接可用，不需要再登录一次。
-        sb.append("ADMIN_AUTH_ENABLED=false\n");
+        sb.append("ADMIN_AUTH_ENABLED=").append(adminAuth ? "true" : "false").append('\n');
         sb.append("ADMIN_USERNAME=admin\n");
-        sb.append("ADMIN_PASSWORD=\n");
+        sb.append("ADMIN_PASSWORD=").append(adminAuth ? admin : "").append('\n');
         // The management UI's 「浏览器登录」 button creates an account by driving
         // a visible Camoufox; that HTTP request stays open until the user
         // finishes Google sign-in, so the request timeout doubles as the login

@@ -28,8 +28,9 @@
     <string name="lan_message">开启后服务监听 0.0.0.0，同一 Wi-Fi 下的其他设备可访问。会自动开启管理端登录并生成 API Key。</string>
     <string name="lan_enable">开启</string>
     <string name="lan_disable">关闭</string>
-    <string name="lan_enabled">已开启局域网访问\n地址：http://%1$s:2048\n请在管理端设置管理员密码。</string>
+    <string name="lan_enabled">已开启局域网访问\n地址：http://%1$s:2048\n其他设备打开该地址后，需用下面的管理端账号登录。</string>
     <string name="lan_no_ip">已开启，但未获取到局域网 IP，请确认已连接 Wi-Fi。</string>
+    <string name="lan_admin_password">管理端账号：admin\n管理端密码：%1$s</string>
     <string name="lan_disabled">已关闭局域网访问</string>
 
     <string name="battery_title">后台保活设置</string>

@@ -60,7 +60,10 @@ runtime/
 - **刷新页面**：菜单 → 刷新页面
 - **检查原项目更新**：菜单 → 检查原项目更新 → 下载 `aistudio2api-vX.Y.Z-linux-arm64.tar.gz` → 覆盖 `/opt/aistudio2api/aistudio2api` → 重启
 - **重启服务**：菜单 → 重启服务（也支持 停止服务）
-- **局域网访问**：菜单 → 局域网访问 → `LISTEN_ADDR=0.0.0.0:2048`，自动开启 `ADMIN_AUTH_ENABLED` 并生成管理端密码
+- **局域网访问**：菜单 → 局域网访问 → `LISTEN_ADDR=0.0.0.0:2048`，同时开启管理端登录
+  （`ADMIN_AUTH_ENABLED=true`）并生成管理端密码；对话框里会显示 `admin` + 该密码，重新打开
+  菜单也能看到。上游控制台默认只接受本机请求，其他设备必须先用这套账号登录，否则会返回
+  `control_plane_forbidden`（关闭时保持免登录，本机 WebView 打开即可用）
 - **后台保活**：菜单 → 后台保活设置 → 申请忽略电池优化（前台服务 + `START_STICKY` + 崩溃重启）
 - **桌面浏览器方式打开**：默认即等价于 Chrome 的「桌面版网站」
   - 桌面 Chrome UA（`Windows NT 10.0; Win64; x64 ... Chrome/126`）

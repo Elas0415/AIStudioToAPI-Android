@@ -408,14 +408,24 @@ public class MainActivity extends AppCompatActivity {
 
     private void showLanDialog() {
         final RuntimeEnv env = new RuntimeEnv(this);
-        boolean enabled = env.isLanEnabled();
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.lan_title)
-                .setMessage(R.string.lan_message)
-                .setPositiveButton(enabled ? R.string.lan_disable : R.string.lan_enable,
-                        (d, w) -> toggleLan(env, !enabled))
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
+        io.execute(() -> {
+            final boolean enabled = env.isLanEnabled();
+            String msg = getString(R.string.lan_message);
+            if (enabled) {
+                String pw = env.adminPassword();
+                if (pw != null && !pw.isEmpty()) {
+                    msg = msg + "\n\n" + getString(R.string.lan_admin_password, pw);
+                }
+            }
+            final String message = msg;
+            handler.post(() -> new AlertDialog.Builder(this)
+                    .setTitle(R.string.lan_title)
+                    .setMessage(message)
+                    .setPositiveButton(enabled ? R.string.lan_disable : R.string.lan_enable,
+                            (d, w) -> toggleLan(env, !enabled))
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show());
+        });
     }
 
     private void toggleLan(RuntimeEnv env, boolean enable) {
@@ -423,17 +433,13 @@ public class MainActivity extends AppCompatActivity {
             try {
                 String key = env.ensureAppConfig(enable);
                 env.writeEnvFile(key, enable);
+                final String admin = env.adminPassword();
                 handler.post(() -> {
                     if (enable) {
                         String ip = LocalNetwork.lanIp(this);
-                        String msg;
-                        if (ip != null) {
-                            msg = getString(R.string.lan_enabled, ip)
-                                    + "\n\n管理端密码: " + env.adminPassword();
-                        } else {
-                            msg = getString(R.string.lan_no_ip)
-                                    + "\n\n管理端密码: " + env.adminPassword();
-                        }
+                        String msg = (ip != null ? getString(R.string.lan_enabled, ip)
+                                                 : getString(R.string.lan_no_ip))
+                                + "\n\n" + getString(R.string.lan_admin_password, admin);
                         new AlertDialog.Builder(this)
                                 .setTitle(R.string.lan_title)
                                 .setMessage(msg)
