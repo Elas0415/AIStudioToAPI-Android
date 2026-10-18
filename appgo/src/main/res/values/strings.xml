@@ -52,8 +52,8 @@
 
     <string name="menu_display">显示分辨率</string>
     <string name="display_title">显示分辨率</string>
-    <string name="display_message">登录窗口里那个浏览器所在的虚拟桌面大小。默认「跟随屏幕」= 屏幕实际像素（宽 × 高 − 顶栏），浏览器正好 1:1 铺满整屏、字迹最清晰；选固定分辨率只是改变“一次能看到多少内容”（桌面比屏幕宽就会等比缩小留黑边，可用双指缩放看细节）。改完会自动重启服务与显示。</string>
-    <string name="display_native">跟随屏幕（1:1 铺满，默认）</string>
+    <string name="display_message">登录窗口本身是横屏的，这里设置它里面那个浏览器所在的虚拟桌面大小。默认 1280 × 720（桌面浏览器常见的横屏尺寸，Google 登录页按桌面版式排版）；选「跟随手机」= 手机横屏实际像素（长边 × 短边 − 顶栏），浏览器正好 1:1 铺满、字迹最清晰，但桌面形状跟手机一样很宽。改完会自动重启服务与显示。</string>
+    <string name="display_native">跟随手机横屏（%1$d×%2$d，1:1 铺满）</string>
     <string name="display_custom">自定义…</string>
     <string name="display_custom_title">自定义分辨率</string>
     <string name="display_custom_hint">宽x高，例如 1600x1000</string>

@@ -52,7 +52,7 @@ final class RuntimeEnv {
      * existing install keeps the previously deployed copy (the deploy is
      * marker-gated). v2: login.html stopped overriding noVNC's canvas sizing.
      */
-    static final String NOVNC_MARKER = ".novnc-go-v2";
+    static final String NOVNC_MARKER = ".novnc-go-v3";
 
     static final int PORT = 2048;
     static final String LOOPBACK = "127.0.0.1";
@@ -67,19 +67,17 @@ final class RuntimeEnv {
     static final int NOVNC_PORT = 6080;
 
     /**
-     * Default geometry of the virtual desktop: exactly the area the login
-     * window's noVNC view occupies, in physical pixels.
-     *
-     * <p>This is what gives the "fills the screen" result: the phone's real
-     * display size minus the login window's app bar
+     * Geometry of the login view itself, in physical pixels: the phone's own
+     * display area, landscape, minus the login window's app bar
      * ({@code @dimen/login_bar_height}, the same dimension the overlay layout
-     * uses). The remote screen therefore has the same pixel grid as the view it
-     * is shown in, so noVNC's scale-to-fit is a no-op — no letterbox bars, no
-     * downscaling, and Chromium rasterises the browser at native resolution.
+     * uses). This is the 「显示分辨率」→「follow the phone」 choice: the remote
+     * screen then has the same pixel grid as the view it is shown in, so
+     * noVNC's scale-to-fit is 1:1 — no letterbox and the browser rasterises at
+     * native resolution.
      *
-     * <p>The reference project does the same thing from the other side: its VNC
-     * login activity passes {@code widthPixels}/{@code heightPixels - dp(60)} to
-     * the backend, which creates the session's X server at that size.
+     * <p>Landscape because the login window is shown in landscape (see
+     * MainActivity#showLoginOverlay): the long edge of the display becomes the
+     * desktop's width, the short edge its height.
      *
      * <p>Note this is decided when the backend starts (the geometry is Xvfb's
      * {@code -screen}), so rotating the phone mid-session keeps the old raster
@@ -87,7 +85,7 @@ final class RuntimeEnv {
      * because its session is created per login attempt.
      */
     static int[] virtualScreenSize(Context ctx) {
-        int[] fallback = {1080, 1920};
+        int[] fallback = {DEFAULT_DISPLAY_W, DEFAULT_DISPLAY_H};
         try {
             android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
             android.view.WindowManager wm = (android.view.WindowManager)
@@ -98,8 +96,10 @@ final class RuntimeEnv {
             // Real metrics = the whole display, which is the area the app owns
             // while it runs immersive (MainActivity hides the system bars).
             wm.getDefaultDisplay().getRealMetrics(dm);
-            int w = Math.max(1, dm.widthPixels);
-            int h = Math.max(1, dm.heightPixels) - loginBarHeight(ctx);
+            int longEdge = Math.max(1, Math.max(dm.widthPixels, dm.heightPixels));
+            int shortEdge = Math.max(1, Math.min(dm.widthPixels, dm.heightPixels));
+            int w = longEdge;
+            int h = shortEdge - loginBarHeight(ctx);
             // Clamp instead of bailing out: a slightly wrong geometry only costs
             // a hair of letterboxing, a fixed fallback would cost the aspect.
             w = Math.min(MAX_DISPLAY, Math.max(MIN_DISPLAY, w));
@@ -175,13 +175,29 @@ final class RuntimeEnv {
 
     /**
      * Geometry of the virtual desktop: the user's choice when one is set,
-     * otherwise exactly the login view's own pixel area (see
-     * {@link #virtualScreenSize}) so the browser fills the screen 1:1.
+     * otherwise {@link #DEFAULT_DISPLAY_W}×{@link #DEFAULT_DISPLAY_H}.
      */
     static int[] displaySize(Context ctx) {
         int[] custom = customDisplaySize(ctx);
-        return custom != null ? custom : virtualScreenSize(ctx);
+        return custom != null ? custom : new int[]{DEFAULT_DISPLAY_W, DEFAULT_DISPLAY_H};
     }
+
+    /**
+     * Default geometry of the virtual desktop: 1280×720.
+     *
+     * <p>Landscape, because the login window is shown in landscape
+     * (MainActivity#showLoginOverlay switches the activity orientation). The
+     * remote page therefore gets the viewport of an ordinary desktop browser,
+     * which is what Google's sign-in page expects: in portrait it switches to
+     * its tall single-column layout, and its two-column card (the one the
+     * comments in {@code login.html} refer to) is only used from ~1000 px up.
+     *
+     * <p>Still a *setting*: 「显示分辨率」 offers this size, a few standard ones
+     * and 「follow the phone」 (the phone's own landscape area, which makes the
+     * login view 1:1 with no letterbox).
+     */
+    static final int DEFAULT_DISPLAY_W = 1280;
+    static final int DEFAULT_DISPLAY_H = 720;
 
     static final String DEFAULT_API_KEY = "123456";
 

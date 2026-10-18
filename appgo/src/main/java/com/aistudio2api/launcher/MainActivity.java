@@ -6,6 +6,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ActivityInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -511,6 +512,12 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         loginOverlayVisible = true;
+        // The browser login is a desktop-shaped page (Google's sign-in layout
+        // switches to its wide two-column card), so the login window is shown
+        // in landscape. configChanges already covers "orientation|screenSize",
+        // so this switch does not recreate the activity: the WebViews survive
+        // the rotation and the noVNC page refits itself when its view resizes.
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         vncZoom.reset();
         // Re-sync the view's aspect with the desktop that is actually running
         // (a display-geometry change takes effect on the next backend start;
@@ -551,6 +558,8 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception ignored) {
             }
             vncWebView.onPause();
+            // Back to the console's own (sensor-driven) orientation.
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         }
         // Keep this outside the visibility guard: a login dismissed with
         // 「返回界面」 still finishes later and must refresh the console.
@@ -634,8 +643,12 @@ public class MainActivity extends AppCompatActivity {
      */
     private void showDisplayDialog() {
         final int[] custom = RuntimeEnv.customDisplaySize(this);
+        // Landscape by construction: the login window itself is shown in
+        // landscape, so "follow the phone" means the phone's landscape area.
+        final int[] nativeSize = RuntimeEnv.virtualScreenSize(this);
         final int[][] sizes = {
-                {0, 0},               // follow the phone (portrait)
+                nativeSize,           // follow the phone (landscape, fills the view)
+                {1280, 720},
                 {1920, 1080},
                 {1280, 1024},
                 {1440, 900},
@@ -643,21 +656,22 @@ public class MainActivity extends AppCompatActivity {
                 {-1, -1},             // custom…
         };
         final String[] labels = {
-                getString(R.string.display_native),
+                getString(R.string.display_native, nativeSize[0], nativeSize[1]),
+                "1280 × 720",
                 "1920 × 1080",
                 "1280 × 1024",
                 "1440 × 900",
                 "1280 × 800",
                 getString(R.string.display_custom),
         };
-        int checked = 0;
-        if (custom != null) {
-            checked = sizes.length - 1;
-            for (int i = 0; i < sizes.length; i++) {
-                if (sizes[i][0] == custom[0] && sizes[i][1] == custom[1]) {
-                    checked = i;
-                    break;
-                }
+        // Tick whichever preset matches the geometry that is in force now — the
+        // stored choice, or the default when the user has never picked one.
+        int[] effective = RuntimeEnv.displaySize(this);
+        int checked = sizes.length - 1;
+        for (int i = 0; i < sizes.length; i++) {
+            if (sizes[i][0] == effective[0] && sizes[i][1] == effective[1]) {
+                checked = i;
+                break;
             }
         }
         new AlertDialog.Builder(this)

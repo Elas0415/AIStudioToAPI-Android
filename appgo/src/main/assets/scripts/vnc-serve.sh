@@ -18,12 +18,13 @@ export LANG=C.UTF-8
 
 DISPLAY_NUM=:99
 export DISPLAY="${DISPLAY_NUM}"
-# Virtual desktop geometry, chosen in the app's 「显示分辨率」 menu (default: the
-# phone's own portrait aspect). This is the *framebuffer* size — what noVNC
+# Virtual desktop geometry, chosen in the app's 「显示分辨率」 menu (default:
+# 1280x720 — the app shows the login window in landscape, so the desktop is
+# landscape too). This is the *framebuffer* size — what noVNC
 # shows — not a box the browser has to fit into: tinywm (started below) fills
 # every window with the screen, so Camoufox can request any size it likes
 # without being clipped at the framebuffer edge.
-SCREEN="${VNC_SCREEN:-1080x1920}"
+SCREEN="${VNC_SCREEN:-1280x720}"
 
 # Clean up anything left over from a previous attempt.
 pkill -f "Xvfb ${DISPLAY_NUM}" 2>/dev/null
