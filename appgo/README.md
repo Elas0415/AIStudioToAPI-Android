@@ -49,13 +49,14 @@ runtime/
 
 - `RuntimeEnv.java`：解压 rootfs、写 `.env`、拼 proot 命令（含 `DISPLAY=:99`）
 - `ServerService.java`：前台服务跑 `./aistudio2api --open-ui=false`，同时拉起虚拟桌面，崩溃自动重启
-- `MainActivity.java`：桌面版网页 + 「浏览器登录」自动切到虚拟桌面
+- `MainActivity.java`：桌面版网页 + 「浏览器登录」自动切到虚拟桌面（登录窗口的应用栏菜单）
 - `PinchZoomLayout.java`：登录窗口的双指缩放容器（noVNC 会吞掉 WebView 自带的捏合）
 - `UpdateChecker.java`：检查上游 release 并覆盖二进制
 - `assets/scripts/start-aistudio2api.sh` / `vnc-serve.sh`
 - `src/main/native/tinywm.c`：自建的极简窗口管理器（`scripts/build-tinywm.sh` 交叉编译成
   `assets/scripts/tinywm`），把 Camoufox 的窗口铺满虚拟桌面
-- `assets/novnc/login.html`：自动连接、按屏幕缩放、可手动发送文本的 noVNC 页面
+- `assets/novnc/login.html`：自动连接、1:1 铺满、画面出现后自动撤掉启动提示的 noVNC 页面
+- `res/values/dimens.xml`：`login_bar_height`，应用栏高度（虚拟桌面高度就是屏幕高减它）
 
 ## 功能
 
@@ -66,14 +67,18 @@ runtime/
   （`ADMIN_AUTH_ENABLED=true`）并生成管理端密码；对话框里会显示 `admin` + 该密码，重新打开
   菜单也能看到。上游控制台默认只接受本机请求，其他设备必须先用这套账号登录，否则会返回
   `control_plane_forbidden`（关闭时保持免登录，本机 WebView 打开即可用）
-- **显示分辨率**：菜单 → 显示分辨率 → 「跟随手机（竖屏，默认）」/ 1920×1080 / 1280×1024 /
+- **显示分辨率**：菜单 → 显示分辨率 → 「跟随屏幕（1:1 铺满，默认）」/ 1920×1080 / 1280×1024 /
   1440×900 / 1280×800 / 自定义（`宽x高`，320-4096）。这个值就是 Xvfb `-screen` 的几何尺寸
-  （经 `VNC_SCREEN` 传给 `vnc-serve.sh`），登录视图用同一比例做等比适配，所以不会留黑边。
+  （经 `VNC_SCREEN` 传给 `vnc-serve.sh`）。默认值不是拍脑袋的固定分辨率，而是**登录视图
+  自己的像素尺寸**（屏幕真实像素宽 × (高 − 应用栏高度)，见 `RuntimeEnv.virtualScreenSize`），
+  于是远端桌面和承载它的视图像素网格完全重合，noVNC 的「缩放到适应」等于 1:1：
+  浏览器铺满整屏、没有黑边、也不做任何缩放，字迹是原生清晰度 —— 和原项目
+  `:app`（AIStudioToAPI）VNC 登录把 `widthPixels`/`heightPixels-60dp` 交给后端的做法一致。
   **Camoufox 的窗口大小不由我们决定**（上游没传窗口尺寸参数），所以 rootfs 里跑一个自建的
   极简窗口管理器 `tinywm`（见下）把每个顶层窗口铺满桌面：无论选哪种分辨率、无论竖屏横屏，
-  浏览器都完整可见，不再被 framebuffer 裁掉。因此这个设置决定的是「一次能看到多少内容」：
-  分辨率越大页面越宽、字越小（可用双指缩放看细节）。改完自动重启服务与显示会话
-  （Xvfb 尺寸只在启动时生效）。
+  浏览器都完整可见，不再被 framebuffer 裁掉。选固定分辨率只会改变「一次能看到多少内容」：
+  桌面比屏幕宽就等比缩小留黑边（可用双指缩放看细节）。改完自动重启服务与显示会话
+  （Xvfb 尺寸只在启动时生效；旋转屏幕后同理，重启服务即按新方向开屏）。
 - **登录窗口铺满桌面（tinywm）**：`src/main/native/tinywm.c` 只依赖 `libX11`，启动时
   接管 SubstructureRedirect，`MapRequest` 一律改成整屏（0,0,宽,高）再 map，
   `ConfigureRequest` 也强制保持整屏（页面刷新不能把窗口缩回去），并支持点击聚焦，
@@ -105,28 +110,40 @@ Camoufox，并由请求本身一直阻塞到用户登录完成。
    Xvfb :99  →  tinywm  →  x11vnc -localhost :5900  →  websockify 127.0.0.1:6080  →  WebView /login.html
    ```
    后端进程带 `DISPLAY=:99`，它打开的 Camoufox 就画在 `:99` 上。
-   虚拟桌面按手机的**竖屏比例**开屏（短边 1080px，可用「显示分辨率」改），
-   并由 `tinywm` 把 Camoufox 的窗口铺满整屏，所以 noVNC「缩放到适应」时几乎不浪费屏幕。
+   虚拟桌面默认按**登录视图自身的像素尺寸**开屏（屏幕真实像素宽 × (高 − 应用栏高度)），
+   并由 `tinywm` 把 Camoufox 的窗口铺满整屏，所以 noVNC「缩放到适应」就是 1:1 铺满。
 2. `MainActivity` 注入一段 JS 钩住 `fetch`/`XHR`：一旦发现上述请求发出，就自动
    把界面切换到登录窗口（全屏覆盖的 noVNC 视图），用户直接在屏幕上完成
    Google 登录（短信验证码 / Passkey / 人机验证都行）。
 3. 服务端登录完成、请求返回后，自动切回控制台并刷新账号列表。
 
-### 登录窗口的显示与缩放
+### 登录窗口的界面与缩放
 
+登录窗口只有两段：**自己的应用栏 + 整屏的浏览器**，没有任何自绘按钮行占地方
+（对照原项目 `:app` 的 VNC 登录效果）：
+
+- 应用栏标题是 `AIStudio2API`，副标题显示连接状态（连接上并出现画面后自动清空），
+  溢出菜单里是全部操作：**适配（回到整屏）**、**输入文本…**、**重连**、**返回界面**
+- 「输入文本…」是原生输入框（不再用 `window.prompt`，WebView 默认不弹 prompt），
+  逐字符按 18ms 间隔发给远端浏览器，换行当回车 —— 验证码、密码、搜索词都能直接输
+- 应用栏高度就是 `@dimen/login_bar_height`（56dp），而 `RuntimeEnv` 正是用它来算虚拟桌面
+  高度，所以视图与远端 framebuffer 尺寸严格一致，默认状态就是 1:1 铺满
+- noVNC 页面自己不再画状态条/按钮，只在画面还是黑的时候显示一个「正在启动登录浏览器…」
+  提示：`login.html` 每 400ms 用 `drawImage` 采样远端画布，一旦出现非黑像素立刻撤掉
+  （本来就无事可做的等待不再像“卡住的占位文字”）
 - `#screen` 只做容器，画布尺寸由 noVNC 内联设置；**不要用 `!important` 覆盖 `canvas`
   的宽高**，否则会把远端桌面拉伸/裁切
-- `PinchZoomLayout` 把 WebView 摆成与虚拟桌面同比例的最大矩形（黑边即容器背景），
-  noVNC 的 autoscale 正好铺满，因此默认就是「整屏适配」
 - noVNC 对每个触摸事件都 `preventDefault`，WebView 自带的捏合永远触发不了；
   因此双指手势在 `PinchZoomLayout` 里处理，并且**不属于** WebView，单指仍按鼠标
   事件传给 noVNC（触摸坐标由 Android 反向映射，noVNC 的落点依然准确）
 - 缩放是通过**改 WebView 的布局尺寸**实现的（不是视图变换）：WebView 重新排版后
   noVNC 的 `ResizeObserver` 会按新容器重算缩放，Chromium 按最终尺寸重新栅格化，
   所以放大后文字依然清晰；缩放范围 1x–3x，只允许覆盖式平移
-- 顶部「适配」按钮复位到整屏适配状态
+- 页面 `desktopsize` 事件会把真实 framebuffer 尺寸回报给 App（`AndroidVnc.onRemoteSize`），
+  `PinchZoomLayout` 用它做等比适配：即使显示会话还是旧几何（比如旋转屏幕后没重启服务），
+  也不会因为比例猜错而多出黑边
 
-登录窗口顶部有「返回界面」和「适配」按钮；中途退出不会中断登录，完成后仍会自动刷新。
+登录窗口全程沉浸式（无状态栏/导航栏），中途「返回界面」不会中断登录，完成后仍会自动刷新。
 `.env` 里 `REQUEST_TIMEOUT=10m`，这个值同时是登录的等待上限（上游默认 5m）。
 
 ## 说明 / 限制

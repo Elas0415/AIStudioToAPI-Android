@@ -81,9 +81,9 @@ public class MainActivity extends AppCompatActivity {
     private View loading;
     private TextView loadingText;
     private View loginOverlay;
+    private androidx.appcompat.widget.Toolbar loginToolbar;
     private WebView vncWebView;
     private PinchZoomLayout vncZoom;
-    private TextView loginStatus;
 
     private ValueCallback<Uri[]> pendingFileCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -97,6 +97,8 @@ public class MainActivity extends AppCompatActivity {
     private volatile boolean loginPending;
     /** Guards against a stale "wait for websockify" probe loading the view. */
     private int vncLoadToken;
+    /** Last remote desktop size reported by the page (see {@link VncBridge}). */
+    private int vncRemoteW, vncRemoteH;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -112,16 +114,16 @@ public class MainActivity extends AppCompatActivity {
         loading = findViewById(R.id.loading);
         loadingText = findViewById(R.id.loadingText);
         loginOverlay = findViewById(R.id.loginOverlay);
+        loginToolbar = findViewById(R.id.loginToolbar);
         vncWebView = findViewById(R.id.vncWebView);
         vncZoom = findViewById(R.id.vncZoom);
-        loginStatus = findViewById(R.id.loginStatus);
-        findViewById(R.id.loginBack).setOnClickListener(v -> dismissLoginOverlay());
-        findViewById(R.id.loginFit).setOnClickListener(v -> vncZoom.reset());
+        configureLoginToolbar();
 
         // Keep the login view at the remote desktop's aspect ratio so noVNC's
-        // zoom-to-fit fills it exactly.
+        // zoom-to-fit fills it exactly. With the default geometry that ratio is
+        // the view's own, so the fit is 1:1 and no letterbox is left.
         int[] vncScreen = RuntimeEnv.displaySize(this);
-        vncZoom.setRemoteSize(vncScreen[0], vncScreen[1]);
+        setRemoteSize(vncScreen[0], vncScreen[1]);
 
         configureWebView();
         configureVncWebView();
@@ -246,12 +248,97 @@ public class MainActivity extends AppCompatActivity {
 
         vncWebView.setBackgroundColor(0xFF000000);
         vncWebView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        // The page reports its connection state so the app bar can show it.
+        vncWebView.addJavascriptInterface(new VncBridge(), "AndroidVnc");
         vncWebView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 return openExternallyIfRemote(request.getUrl());
             }
         });
+    }
+
+    /**
+     * Login window app bar: title, status subtitle and the overflow menu that
+     * holds everything the user may need while the browser is on screen.
+     */
+    private void configureLoginToolbar() {
+        loginToolbar.setTitle(R.string.app_name);
+        loginToolbar.inflateMenu(R.menu.login_menu);
+        loginToolbar.setOnMenuItemClickListener(item -> {
+            int id = item.getItemId();
+            if (id == R.id.login_fit) {
+                vncZoom.reset();
+                return true;
+            }
+            if (id == R.id.login_type) {
+                askLoginText();
+                return true;
+            }
+            if (id == R.id.login_reconnect) {
+                reloadVncPage();
+                return true;
+            }
+            if (id == R.id.login_back) {
+                dismissLoginOverlay();
+                return true;
+            }
+            return false;
+        });
+    }
+
+    /** Usability of the login window before/while the browser is on screen. */
+    private void setLoginStatus(int resId) {
+        loginToolbar.setSubtitle(resId == 0 ? null : getString(resId));
+    }
+
+    /** Sends raw text to the remote browser (newline = Return). */
+    private void askLoginText() {
+        if (!loginOverlayVisible || vncWebView.getUrl() == null) {
+            toast(getString(R.string.login_type_unavailable));
+            return;
+        }
+        final EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        input.setHint(R.string.login_type_hint);
+        input.setMinLines(2);
+        FrameLayout box = new FrameLayout(this);
+        int pad = Math.round(20 * getResources().getDisplayMetrics().density);
+        box.setPadding(pad, pad / 2, pad, 0);
+        box.addView(input);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.login_type_title)
+                .setMessage(R.string.login_type_message)
+                .setView(box)
+                .setPositiveButton(R.string.login_type_send, (d, w) -> {
+                    String text = input.getText().toString();
+                    if (text.isEmpty()) {
+                        return;
+                    }
+                    sendLoginText(text);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void sendLoginText(String text) {
+        // JSON-quote so quotes/newlines/backslashes survive the JS round-trip.
+        String quoted = org.json.JSONObject.quote(text);
+        vncWebView.evaluateJavascript(
+                "window.__a2api && window.__a2api.typeText(" + quoted + ")", null);
+        toast(getString(R.string.login_type_sent, text.length()));
+    }
+
+    /**
+     * Reloads the noVNC page (the 「重连」 menu item). The display bridge keeps
+     * running, so this only has to rebuild the WebSocket.
+     */
+    private void reloadVncPage() {
+        if (!loginOverlayVisible) {
+            return;
+        }
+        setLoginStatus(R.string.login_overlay_connecting);
+        vncWebView.loadUrl(VNC_URL);
     }
 
     /** Opens non-loopback links in the system browser; keeps loopback in-app. */
@@ -299,13 +386,74 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * Callbacks from the noVNC page (login window), used only to keep the app
+     * bar's status line honest: "connected" once the WebSocket is up, "ready"
+     * once the remote desktop stops being a blank screen.
+     */
+    private final class VncBridge {
+        @JavascriptInterface
+        public void onState(String state) {
+            handler.post(() -> {
+                if (!loginOverlayVisible) {
+                    return;
+                }
+                if ("connected".equals(state)) {
+                    setLoginStatus(R.string.login_overlay_ready);
+                } else if ("ready".equals(state)) {
+                    // Blank desktop replaced by the browser: nothing left to say.
+                    setLoginStatus(0);
+                } else if ("disconnected".equals(state)) {
+                    setLoginStatus(R.string.login_overlay_disconnected);
+                } else {
+                    setLoginStatus(R.string.login_overlay_connecting);
+                }
+            });
+        }
+
+        /**
+         * The framebuffer size noVNC actually connected to. Using it (rather
+         * than the requested geometry) keeps the view's aspect ratio correct
+         * even when the display session is still running at a stale geometry,
+         * e.g. after the phone was rotated without restarting the service.
+         */
+        @JavascriptInterface
+        public void onRemoteSize(int width, int height) {
+            handler.post(() -> {
+                if (width <= 0 || height <= 0
+                        || (width == vncRemoteW && height == vncRemoteH)) {
+                    return;
+                }
+                vncRemoteW = width;
+                vncRemoteH = height;
+                setRemoteSize(width, height);
+            });
+        }
+    }
+
+    /** Applies the remote geometry to the zoom container and the field pair. */
+    private void setRemoteSize(int width, int height) {
+        vncRemoteW = width;
+        vncRemoteH = height;
+        vncZoom.setRemoteSize(width, height);
+    }
+
     private void showLoginOverlay() {
         if (loginOverlayVisible) {
             return;
         }
         loginOverlayVisible = true;
         vncZoom.reset();
-        loginStatus.setText(R.string.login_overlay_preparing);
+        // Re-sync the view's aspect with the desktop that is actually running
+        // (a display-geometry change takes effect on the next backend start;
+        // the page reports the real size again once it connects).
+        int[] vncScreen = RuntimeEnv.displaySize(this);
+        if (vncRemoteW != vncScreen[0] || vncRemoteH != vncScreen[1]) {
+            setRemoteSize(vncScreen[0], vncScreen[1]);
+        } else {
+            vncZoom.reset();
+        }
+        setLoginStatus(R.string.login_overlay_connecting);
         loginOverlay.setVisibility(View.VISIBLE);
         vncWebView.onResume();
 
@@ -317,10 +465,9 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
                 if (up) {
-                    loginStatus.setText(R.string.login_overlay_ready);
                     vncWebView.loadUrl(VNC_URL);
                 } else {
-                    loginStatus.setText(R.string.login_overlay_unavailable);
+                    setLoginStatus(R.string.login_overlay_unavailable);
                 }
             });
         });
@@ -520,7 +667,7 @@ public class MainActivity extends AppCompatActivity {
             toast(getString(R.string.display_applied, w, h));
         }
         int[] size = RuntimeEnv.displaySize(this);
-        vncZoom.setRemoteSize(size[0], size[1]);
+        setRemoteSize(size[0], size[1]);
         restartBackendAndReload();
     }
 

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Height of the login window's app bar.
+
+      RuntimeEnv subtracts exactly this value from the display height when it
+      sizes the virtual desktop (see RuntimeEnv.virtualScreenSize), so the noVNC
+      view and the remote framebuffer line up 1:1: the login window fills the
+      screen with no letterbox, and Chromium rasterises at native resolution.
+      Keep this in sync with the login overlay's Toolbar height in
+      activity_main.xml — they must be the same dimension.
+    -->
+    <dimen name="login_bar_height">56dp</dimen>
+</resources>

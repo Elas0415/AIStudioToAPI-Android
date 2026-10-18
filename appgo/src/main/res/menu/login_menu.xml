@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Login window menu (the overflow of its own app bar).
+
+  The login window has no separate buttons: everything the user may need while
+  the browser is on screen lives here, so the noVNC view gets the whole area
+  below the app bar.
+-->
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/login_fit"
+        android:title="@string/login_menu_fit"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/login_type"
+        android:title="@string/login_menu_type"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/login_reconnect"
+        android:title="@string/login_menu_reconnect"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/login_back"
+        android:title="@string/login_menu_back"
+        app:showAsAction="never" />
+</menu>

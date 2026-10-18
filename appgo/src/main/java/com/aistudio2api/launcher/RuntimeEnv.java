@@ -67,22 +67,60 @@ final class RuntimeEnv {
     static final int NOVNC_PORT = 6080;
 
     /**
-     * Virtual desktop size, derived from the phone's *portrait* aspect ratio so
-     * that noVNC's fit-to-view wastes as little screen as possible.
+     * Default geometry of the virtual desktop: exactly the area the login
+     * window's noVNC view occupies, in physical pixels.
      *
-     * The short side is kept at 1080px: a fresh Camoufox profile picks its own
-     * window size, and a screen narrower than that would push the browser window
-     * off the edge of the remote desktop.
+     * <p>This is what gives the "fills the screen" result: the phone's real
+     * display size minus the login window's app bar
+     * ({@code @dimen/login_bar_height}, the same dimension the overlay layout
+     * uses). The remote screen therefore has the same pixel grid as the view it
+     * is shown in, so noVNC's scale-to-fit is a no-op — no letterbox bars, no
+     * downscaling, and Chromium rasterises the browser at native resolution.
+     *
+     * <p>The reference project does the same thing from the other side: its VNC
+     * login activity passes {@code widthPixels}/{@code heightPixels - dp(60)} to
+     * the backend, which creates the session's X server at that size.
+     *
+     * <p>Note this is decided when the backend starts (the geometry is Xvfb's
+     * {@code -screen}), so rotating the phone mid-session keeps the old raster
+     * until the service restarts — the same trade-off the reference project has,
+     * because its session is created per login attempt.
      */
     static int[] virtualScreenSize(Context ctx) {
-        int shortSide = 1080;
+        int[] fallback = {1080, 1920};
         try {
-            android.util.DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
-            int a = Math.max(1, Math.min(dm.widthPixels, dm.heightPixels));
-            int b = Math.max(1, Math.max(dm.widthPixels, dm.heightPixels));
-            return new int[]{shortSide, Math.round(shortSide * (float) b / a)};
+            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+            android.view.WindowManager wm = (android.view.WindowManager)
+                    ctx.getSystemService(Context.WINDOW_SERVICE);
+            if (wm == null) {
+                return fallback;
+            }
+            // Real metrics = the whole display, which is the area the app owns
+            // while it runs immersive (MainActivity hides the system bars).
+            wm.getDefaultDisplay().getRealMetrics(dm);
+            int w = Math.max(1, dm.widthPixels);
+            int h = Math.max(1, dm.heightPixels) - loginBarHeight(ctx);
+            // Clamp instead of bailing out: a slightly wrong geometry only costs
+            // a hair of letterboxing, a fixed fallback would cost the aspect.
+            w = Math.min(MAX_DISPLAY, Math.max(MIN_DISPLAY, w));
+            h = Math.min(MAX_DISPLAY, Math.max(MIN_DISPLAY, h));
+            return new int[]{w, h};
         } catch (Exception e) {
-            return new int[]{shortSide, 1920};
+            return fallback;
+        }
+    }
+
+    /**
+     * Height of the login window's app bar in pixels. Deliberately a dimension
+     * resource rather than {@code ?attr/actionBarSize} so the value used to size
+     * the virtual desktop is byte-for-byte the value the overlay's Toolbar is
+     * laid out with.
+     */
+    static int loginBarHeight(Context ctx) {
+        try {
+            return ctx.getResources().getDimensionPixelSize(R.dimen.login_bar_height);
+        } catch (Exception e) {
+            return Math.round(56 * ctx.getResources().getDisplayMetrics().density);
         }
     }
 
@@ -137,9 +175,8 @@ final class RuntimeEnv {
 
     /**
      * Geometry of the virtual desktop: the user's choice when one is set,
-     * otherwise the phone's own portrait aspect. A bigger desktop means a
-     * Camoufox window (which sizes itself) is fully visible instead of being
-     * clipped by the framebuffer edge.
+     * otherwise exactly the login view's own pixel area (see
+     * {@link #virtualScreenSize}) so the browser fills the screen 1:1.
      */
     static int[] displaySize(Context ctx) {
         int[] custom = customDisplaySize(ctx);
@@ -708,7 +745,9 @@ final class RuntimeEnv {
         // same values from RuntimeEnv.DISPLAY.
         // The WAA workers are launched with -headless, so they ignore DISPLAY.
         env.put("DISPLAY", DISPLAY);
-        // Xvfb's geometry, driven by the 「显示分辨率」 setting.
+        // Xvfb's geometry: by default exactly the login view's pixel area, so
+        // the browser fills the screen 1:1 (see virtualScreenSize), or the
+        // geometry picked in the 「显示分辨率」 menu.
         int[] screen = displaySize(ctx);
         env.put("VNC_SCREEN", screen[0] + "x" + screen[1]);
         env.put("HOME", "/root");

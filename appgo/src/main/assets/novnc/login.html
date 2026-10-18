@@ -3,11 +3,19 @@
 <head>
 <meta charset="utf-8">
 <!--
-  The page is loaded in a WebView that the app sizes to the remote screen's
-  aspect ratio, so `width=device-width` gives noVNC a container with exactly the
-  framebuffer's shape: autoscale then fills it completely (no letterbox, no
-  cropping). Zooming is done by the native PinchZoomLayout, which resizes this
-  WebView, so the page itself stays at a fixed 1:1 CSS scale.
+  Login window for the noVNC view.
+
+  The app keeps this WebView at exactly the remote framebuffer's size (it sizes
+  Xvfb to "screen - app bar" and this container is that area), so `scaleViewport`
+  below resolves to a 1:1 mapping: the browser fills the window with no black
+  bars and Chromium rasterises it at native resolution. Zooming is done by the
+  native PinchZoomLayout, which resizes the WebView, so this page never scales
+  itself and stays touch-faithful.
+
+  The page draws no chrome of its own: status, "type text", "reconnect" and "fit"
+  all live in the app's own app bar (see MainActivity / login_menu.xml). All this
+  page adds is a boot notice that goes away as soon as the remote desktop is no
+  longer a blank screen.
 -->
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
 <title>登录窗口</title>
@@ -16,76 +24,184 @@
   /* Do not style the canvas: noVNC sets its size inline from the fit scale,
      and overriding it stretches the remote desktop out of shape. */
   #screen { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
-  #bar {
-    position: fixed; right: 8px; bottom: 8px; z-index: 10;
-    display: flex; gap: 6px; opacity: 0.85;
+  #boot {
+    position: absolute; left: 0; right: 0; top: 50%; z-index: 5;
+    transform: translateY(-50%);
+    text-align: center; pointer-events: none;
+    font: 13px/1.7 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #C9D1D9;
   }
-  #bar button {
-    font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid #30363D;
-    background: #161B22; color: #C9D1D9;
+  #boot .ring {
+    width: 26px; height: 26px; margin: 0 auto 10px;
+    border: 2px solid rgba(201,209,217,0.25); border-top-color: #79C0FF;
+    border-radius: 50%; animation: spin 0.9s linear infinite;
   }
-  #status {
-    position: fixed; left: 0; top: 0; right: 0; z-index: 9;
-    font: 12px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    color: #C9D1D9; background: rgba(13,17,23,0.9); padding: 4px 10px;
-    text-align: center;
-  }
-  #status.ok { background: rgba(22,82,45,0.9); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #boot.gone { display: none; }
 </style>
 </head>
 <body>
 <div id="screen"></div>
-<div id="status">正在连接登录窗口…</div>
-<div id="bar">
-  <button id="btnType" title="向远端发送文本">⌨ 输入</button>
-  <button id="btnReconnect">重连</button>
-</div>
+<div id="boot"><div class="ring"></div><div id="bootText">正在启动登录浏览器…</div></div>
 
 <script type="module">
 import RFB from './core/rfb.js';
 
-const statusEl = document.getElementById('status');
-let rfb = null;
+const screenEl = document.getElementById('screen');
+const bootEl = document.getElementById('boot');
+const bootTextEl = document.getElementById('bootText');
 
-function setStatus(text, ok) {
-  statusEl.textContent = text;
-  statusEl.className = ok ? 'ok' : '';
-  statusEl.style.display = text ? 'block' : 'none';
+let rfb = null;
+let bootTimer = null;
+let bootDeadline = 0;
+let sizeTimer = null;
+
+/* ------------------------------------------------------------------ *
+ * Bridge to the app (status line in the login window's app bar).
+ * ------------------------------------------------------------------ */
+function bridge(state, w, h) {
+  try {
+    const a = window.AndroidVnc;
+    if (!a) return;
+    if (state && a.onState) a.onState(state);
+    if (w && h && a.onRemoteSize) a.onRemoteSize(w, h);
+  } catch (e) { /* page still usable without the app */ }
 }
 
+/* ------------------------------------------------------------------ *
+ * Remote framebuffer size, reported to the app.
+ *
+ * noVNC keeps the canvas at the framebuffer's resolution and only scales its
+ * CSS size, so the canvas size is the remote desktop size. This version of
+ * noVNC has no "desktopsize" event, hence the small poll.
+ * ------------------------------------------------------------------ */
+let lastRemoteW = 0;
+let lastRemoteH = 0;
+
+function remoteSize() {
+  const canvas = screenEl.querySelector('canvas');
+  if (canvas && canvas.width > 0 && canvas.height > 0) {
+    return [canvas.width, canvas.height];
+  }
+  if (rfb && rfb._fbWidth > 0 && rfb._fbHeight > 0) {
+    return [rfb._fbWidth, rfb._fbHeight];
+  }
+  return null;
+}
+
+function reportRemoteSize() {
+  const size = remoteSize();
+  if (!size) return;
+  if (size[0] !== lastRemoteW || size[1] !== lastRemoteH) {
+    lastRemoteW = size[0];
+    lastRemoteH = size[1];
+    bridge(null, lastRemoteW, lastRemoteH);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Boot notice: shown while the remote desktop is still blank (Xvfb's root
+ * window before Camoufox maps), removed the moment pixels appear.
+ * ------------------------------------------------------------------ */
+const probe = document.createElement('canvas');
+probe.width = 8;
+probe.height = 8;
+const probeCtx = probe.getContext('2d');
+
+function desktopHasContent() {
+  const canvas = screenEl.querySelector('canvas');
+  if (!canvas || !canvas.width || !canvas.height) return false;
+  try {
+    probeCtx.clearRect(0, 0, 8, 8);
+    probeCtx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, 8, 8);
+    const d = probeCtx.getImageData(0, 0, 8, 8).data;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i] > 12 || d[i + 1] > 12 || d[i + 2] > 12) return true;
+    }
+  } catch (e) {
+    // Unreadable canvas (e.g. a WebGL renderer without preserveDrawingBuffer):
+    // never let the notice get stuck because of that.
+    return true;
+  }
+  return false;
+}
+
+function hideBoot(ready) {
+  if (bootTimer) {
+    clearInterval(bootTimer);
+    bootTimer = null;
+  }
+  bootEl.classList.add('gone');
+  if (ready) bridge('ready');
+}
+
+function watchBoot() {
+  bootDeadline = Date.now() + 90000;
+  if (bootTimer) clearInterval(bootTimer);
+  bootTimer = setInterval(() => {
+    reportRemoteSize();
+    if (desktopHasContent()) {
+      hideBoot(true);
+    } else if (Date.now() > bootDeadline) {
+      // Give up quietly rather than covering the desktop forever.
+      hideBoot(false);
+    }
+  }, 400);
+}
+
+function showBoot(text) {
+  bootTextEl.textContent = text;
+  bootEl.classList.remove('gone');
+  watchBoot();
+}
+
+/* ------------------------------------------------------------------ *
+ * Connection
+ * ------------------------------------------------------------------ */
 function wsUrl() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   return proto + '://' + location.host + '/websockify';
 }
 
 function connect() {
-  setStatus('正在连接登录窗口…', false);
+  bridge('connecting');
+  showBoot('正在启动登录浏览器…');
   try {
-    rfb = new RFB(document.getElementById('screen'), wsUrl(), {
-      credentials: { password: '' },
-    });
-    // Fit the whole remote desktop into this view; the app keeps the view at
-    // the remote screen's aspect ratio, so "fit" means "fill". The user zooms
-    // with two fingers (handled natively, outside this page).
+    rfb = new RFB(screenEl, wsUrl(), { credentials: { password: '' } });
+    // Fit the whole desktop into this view. The app sizes this view to the
+    // remote screen, so "fit" means "fill, 1:1".
     rfb.scaleViewport = true;
     rfb.clipViewport = false;
     rfb.resizeSession = false;
     rfb.viewOnly = false;
+
     rfb.addEventListener('connect', () => {
-      setStatus('已连接，请在此窗口完成 Google 登录', true);
-      setTimeout(() => setStatus('', true), 4000);
+      bridge('connected');
+      bootTextEl.textContent = '正在启动登录浏览器…';
       rfb.focus();
+      reportRemoteSize();
+      // The framebuffer is readable now; the poll above hides the notice as
+      // soon as Camoufox paints its window.
+      watchBoot();
+      // Keep the app's aspect ratio honest if the desktop is resized later.
+      if (!sizeTimer) sizeTimer = setInterval(reportRemoteSize, 1500);
     });
     rfb.addEventListener('disconnect', (e) => {
       const clean = e.detail && e.detail.clean;
-      setStatus(clean ? '连接已关闭' : '连接断开，可点击「重连」重试', false);
+      bridge('disconnected');
+      showBoot(clean ? '登录窗口已断开' : '连接断开…');
     });
   } catch (err) {
-    setStatus('连接失败：' + err.message, false);
+    bridge('disconnected');
+    bootTextEl.textContent = '连接失败：' + err.message;
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Text input (used by the app bar's 「输入文本…」)
+ * ------------------------------------------------------------------ */
 const XK_SHIFT = 0xFFE1;
+const XK_RETURN = 0xFF0D;
 const SHIFTED = {
   '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7',
   '*': '8', '(': '9', ')': '0', '_': '-', '+': '=', '{': '[', '}': ']',
@@ -107,41 +223,35 @@ function typeChar(ch) {
     base = SHIFTED[ch];
     shift = true;
   }
-  if (shift) {
-    rfb.sendKey(XK_SHIFT, 'ShiftLeft', true);
-  }
+  if (shift) rfb.sendKey(XK_SHIFT, 'ShiftLeft', true);
   tapKey(base.charCodeAt(0));
-  if (shift) {
-    rfb.sendKey(XK_SHIFT, 'ShiftLeft', false);
-  }
+  if (shift) rfb.sendKey(XK_SHIFT, 'ShiftLeft', false);
 }
+
+// Chars go out one at a time: Camoufox drops bursts sent in a single tick.
+let sendQueue = Promise.resolve();
 
 function sendText(text) {
-  for (const ch of text) {
-    if (ch === '\n') {
-      tapKey(0xFF0D); // Return
-    } else {
-      typeChar(ch);
-    }
-    // Small delay keeps Camoufox's key handling from dropping fast input.
+  for (const ch of Array.from(text)) {
+    sendQueue = sendQueue.then(() => new Promise((res) => {
+      if (ch === '\n') tapKey(XK_RETURN);
+      else typeChar(ch);
+      setTimeout(res, 18);
+    }));
   }
+  return sendQueue;
 }
 
-document.getElementById('btnType').addEventListener('click', () => {
-  const text = window.prompt('输入要发送到登录窗口的文本（逐字符发送，回车会作为 Enter）：', '');
-  if (text) {
+/* ------------------------------------------------------------------ *
+ * Interface used by MainActivity via evaluateJavascript().
+ * ------------------------------------------------------------------ */
+window.__a2api = {
+  typeText(text) {
+    if (!rfb || typeof text !== 'string') return;
+    try { rfb.focus(); } catch (e) { /* ignore */ }
     sendText(text);
-    setStatus('已发送 ' + text.length + ' 个字符', true);
-    setTimeout(() => setStatus('', true), 2000);
-  }
-});
-
-document.getElementById('btnReconnect').addEventListener('click', () => {
-  if (rfb) {
-    try { rfb.disconnect(); } catch (e) {}
-  }
-  setTimeout(connect, 300);
-});
+  },
+};
 
 connect();
 </script>
