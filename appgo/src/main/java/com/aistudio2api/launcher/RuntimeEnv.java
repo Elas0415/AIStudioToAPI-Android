@@ -490,6 +490,8 @@ final class RuntimeEnv {
      * Xvfb / x11vnc wrappers injected into /usr/local/bin (first on PATH):
      *   - Xvfb gets -nolock (Android SELinux forbids Xorg's lock link()).
      *   - x11vnc gets -noshm (some Android kernels lack SysV shm syscalls).
+     * Also drops in tinywm, the minimal window manager that fills Camoufox's
+     * login window with the desktop (see appgo/src/main/native/tinywm.c).
      */
     private void deployXvfbWrappers(AssetManager am) throws IOException {
         File xvfb = new File(rootfs, "usr/local/bin/Xvfb");
@@ -498,6 +500,9 @@ final class RuntimeEnv {
         File x11vnc = new File(rootfs, "usr/local/bin/x11vnc");
         copyAsset(am, "scripts/x11vnc", x11vnc);
         makeExecutable(x11vnc);
+        File tinywm = new File(rootfs, "usr/local/bin/tinywm");
+        copyAsset(am, "scripts/tinywm", tinywm);
+        makeExecutable(tinywm);
     }
 
     File devDir() {

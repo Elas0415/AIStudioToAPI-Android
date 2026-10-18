@@ -53,6 +53,8 @@ runtime/
 - `PinchZoomLayout.java`：登录窗口的双指缩放容器（noVNC 会吞掉 WebView 自带的捏合）
 - `UpdateChecker.java`：检查上游 release 并覆盖二进制
 - `assets/scripts/start-aistudio2api.sh` / `vnc-serve.sh`
+- `src/main/native/tinywm.c`：自建的极简窗口管理器（`scripts/build-tinywm.sh` 交叉编译成
+  `assets/scripts/tinywm`），把 Camoufox 的窗口铺满虚拟桌面
 - `assets/novnc/login.html`：自动连接、按屏幕缩放、可手动发送文本的 noVNC 页面
 
 ## 功能
@@ -67,9 +69,18 @@ runtime/
 - **显示分辨率**：菜单 → 显示分辨率 → 「跟随手机（竖屏，默认）」/ 1920×1080 / 1280×1024 /
   1440×900 / 1280×800 / 自定义（`宽x高`，320-4096）。这个值就是 Xvfb `-screen` 的几何尺寸
   （经 `VNC_SCREEN` 传给 `vnc-serve.sh`），登录视图用同一比例做等比适配，所以不会留黑边。
-  **Camoufox 的窗口大小不由我们决定**（rootfs 里没有窗口管理器、上游也没传窗口尺寸参数），
-  窗口比桌面大就会被 framebuffer 裁掉，因此「调大分辨率」是让浏览器完整可见的手段（整体变小，
-  用双指缩放看细节）。改完自动重启服务与显示会话（Xvfb 尺寸只在启动时生效）。
+  **Camoufox 的窗口大小不由我们决定**（上游没传窗口尺寸参数），所以 rootfs 里跑一个自建的
+  极简窗口管理器 `tinywm`（见下）把每个顶层窗口铺满桌面：无论选哪种分辨率、无论竖屏横屏，
+  浏览器都完整可见，不再被 framebuffer 裁掉。因此这个设置决定的是「一次能看到多少内容」：
+  分辨率越大页面越宽、字越小（可用双指缩放看细节）。改完自动重启服务与显示会话
+  （Xvfb 尺寸只在启动时生效）。
+- **登录窗口铺满桌面（tinywm）**：`src/main/native/tinywm.c` 只依赖 `libX11`，启动时
+  接管 SubstructureRedirect，`MapRequest` 一律改成整屏（0,0,宽,高）再 map，
+  `ConfigureRequest` 也强制保持整屏（页面刷新不能把窗口缩回去），并支持点击聚焦，
+  保证键盘输入仍到达浏览器；override-redirect 窗口（下拉菜单、气泡）和小于 200×200
+  的辅助窗口不动。若已有窗口管理器在跑则直接退出，不会破坏显示。编译：
+  `scripts/build-tinywm.sh`（用 `aarch64-linux-gnu-gcc` 链接 rootfs 里的 `libX11.so.6`），
+  产物 `assets/scripts/tinywm` 每次启动由 `RuntimeEnv` 部署到 rootfs 的 `/usr/local/bin`。
 - **后台保活**：菜单 → 后台保活设置 → 申请忽略电池优化（前台服务 + `START_STICKY` + 崩溃重启）
 - **桌面浏览器方式打开**：默认即等价于 Chrome 的「桌面版网站」
   - 桌面 Chrome UA（`Windows NT 10.0; Win64; x64 ... Chrome/126`）
@@ -91,11 +102,11 @@ Camoufox，并由请求本身一直阻塞到用户登录完成。
 
 1. `ServerService` 启动后端的同时，在 rootfs 内拉起虚拟桌面
    ```
-   Xvfb :99  →  x11vnc -localhost :5900  →  websockify 127.0.0.1:6080  →  WebView /login.html
+   Xvfb :99  →  tinywm  →  x11vnc -localhost :5900  →  websockify 127.0.0.1:6080  →  WebView /login.html
    ```
    后端进程带 `DISPLAY=:99`，它打开的 Camoufox 就画在 `:99` 上。
-   虚拟桌面按手机的**竖屏比例**开屏（短边 1080px），这样 noVNC「缩放到适应」时
-   几乎不浪费屏幕；短边取 1080 是为了让自行决定窗口大小的 Camoufox 不会被桌面裁掉。
+   虚拟桌面按手机的**竖屏比例**开屏（短边 1080px，可用「显示分辨率」改），
+   并由 `tinywm` 把 Camoufox 的窗口铺满整屏，所以 noVNC「缩放到适应」时几乎不浪费屏幕。
 2. `MainActivity` 注入一段 JS 钩住 `fetch`/`XHR`：一旦发现上述请求发出，就自动
    把界面切换到登录窗口（全屏覆盖的 noVNC 视图），用户直接在屏幕上完成
    Google 登录（短信验证码 / Passkey / 人机验证都行）。
@@ -125,6 +136,6 @@ Camoufox，并由请求本身一直阻塞到用户登录完成。
 - 移动端保守参数：`WARM_WORKER_LIMIT=1`、`MAX_ACTIVE_WORKERS=2`、`WARM_STARTUP_CONCURRENCY=1`、`PER_ACCOUNT_CONCURRENCY=1`；改 `.env` 后重启服务生效
 - 内置 Camoufox 通过 `CAMOUFOX_PATH=/opt/camoufox/camoufox-bin` 复用，不会再去下载
 - 虚拟桌面随服务一起启停，空闲时几乎无占用；只监听回环（x11vnc `-localhost`），noVNC 也只绑定 `127.0.0.1:6080`
-- 虚拟桌面里没有窗口管理器，Camoufox 窗口大小由它自己决定：桌面开得够大就不会被裁，
-  但窗口未必铺满整个桌面，可能出现黑边 —— 用双指缩放放大即可
+- 虚拟桌面里跑一个自建的极简窗口管理器 `tinywm`，把 Camoufox 的窗口铺满整屏（不再依赖
+  「桌面开得够大」）；万一个窗口管理器失败，显示会话照常工作，只是窗口可能被裁
 - 上游为 MIT 许可；本模块仅做 Android 打包与平台适配，非官方发布

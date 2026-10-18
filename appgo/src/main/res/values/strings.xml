@@ -35,7 +35,7 @@
 
     <string name="menu_display">显示分辨率</string>
     <string name="display_title">显示分辨率</string>
-    <string name="display_message">登录窗口里那个浏览器所在的虚拟桌面大小。调大分辨率能让浏览器窗口完整可见（整体变小，用双指缩放看细节）；改完会自动重启服务与显示。</string>
+    <string name="display_message">登录窗口里那个浏览器所在的虚拟桌面大小。浏览器窗口会自动铺满整个桌面，所以这里决定的是“一次能看到多少内容”：分辨率越大，页面越宽、字越小（可用双指缩放看细节）；越小则字越大、内容越少。改完会自动重启服务与显示。</string>
     <string name="display_native">跟随手机（竖屏，默认）</string>
     <string name="display_custom">自定义…</string>
     <string name="display_custom_title">自定义分辨率</string>

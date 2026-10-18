@@ -22,7 +22,7 @@ final class ProcessKiller {
 
     private static final String[] NAMES = {
             "aistudio2api", "camoufox", "camoufox-bin", "Xvfb", "x11vnc", "websockify",
-            "bash", "libproot.so",
+            "tinywm", "bash", "libproot.so",
     };
 
     private ProcessKiller() {
