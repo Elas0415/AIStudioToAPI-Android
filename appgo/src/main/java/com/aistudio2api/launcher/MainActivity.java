@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputType;
 import android.util.Base64;
 import android.util.Log;
 import android.view.Menu;
@@ -27,6 +28,8 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -117,7 +120,7 @@ public class MainActivity extends AppCompatActivity {
 
         // Keep the login view at the remote desktop's aspect ratio so noVNC's
         // zoom-to-fit fills it exactly.
-        int[] vncScreen = RuntimeEnv.virtualScreenSize(this);
+        int[] vncScreen = RuntimeEnv.displaySize(this);
         vncZoom.setRemoteSize(vncScreen[0], vncScreen[1]);
 
         configureWebView();
@@ -392,6 +395,9 @@ public class MainActivity extends AppCompatActivity {
         } else if (id == R.id.action_lan) {
             showLanDialog();
             return true;
+        } else if (id == R.id.action_display) {
+            showDisplayDialog();
+            return true;
         } else if (id == R.id.action_battery) {
             showBatteryDialog();
             return true;
@@ -404,6 +410,118 @@ public class MainActivity extends AppCompatActivity {
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    /**
+     * Termux:X11-style display resolution for the virtual desktop. The choice is
+     * Xvfb's {@code -screen} geometry, so applying it restarts the backend (and
+     * with it the X display, the VNC bridge and the noVNC view's aspect ratio).
+     */
+    private void showDisplayDialog() {
+        final int[] custom = RuntimeEnv.customDisplaySize(this);
+        final int[][] sizes = {
+                {0, 0},               // follow the phone (portrait)
+                {1920, 1080},
+                {1280, 1024},
+                {1440, 900},
+                {1280, 800},
+                {-1, -1},             // custom…
+        };
+        final String[] labels = {
+                getString(R.string.display_native),
+                "1920 × 1080",
+                "1280 × 1024",
+                "1440 × 900",
+                "1280 × 800",
+                getString(R.string.display_custom),
+        };
+        int checked = 0;
+        if (custom != null) {
+            checked = sizes.length - 1;
+            for (int i = 0; i < sizes.length; i++) {
+                if (sizes[i][0] == custom[0] && sizes[i][1] == custom[1]) {
+                    checked = i;
+                    break;
+                }
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.display_title)
+                .setMessage(R.string.display_message)
+                .setSingleChoiceItems(labels, checked, (d, which) -> {
+                    d.dismiss();
+                    if (sizes[which][0] < 0) {
+                        askCustomDisplaySize(custom);
+                    } else {
+                        applyDisplaySize(sizes[which][0], sizes[which][1]);
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void askCustomDisplaySize(int[] current) {
+        final EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        input.setHint(R.string.display_custom_hint);
+        if (current != null) {
+            input.setText(current[0] + "x" + current[1]);
+            input.setSelection(input.getText().length());
+        }
+        FrameLayout box = new FrameLayout(this);
+        int pad = Math.round(20 * getResources().getDisplayMetrics().density);
+        box.setPadding(pad, pad / 2, pad, 0);
+        box.addView(input);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.display_custom_title)
+                .setView(box)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    int[] size = parseDisplaySize(input.getText().toString());
+                    if (size == null) {
+                        toast(getString(R.string.display_invalid,
+                                RuntimeEnv.MIN_DISPLAY, RuntimeEnv.MAX_DISPLAY));
+                    } else {
+                        applyDisplaySize(size[0], size[1]);
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** "1600x1000", "1600×1000" or "1600 1000" -> {1600, 1000}; null if invalid. */
+    private static int[] parseDisplaySize(String text) {
+        if (text == null) {
+            return null;
+        }
+        String[] parts = text.trim().toLowerCase().split("[x×*,\\s]+");
+        if (parts.length < 2) {
+            return null;
+        }
+        try {
+            int w = Integer.parseInt(parts[0]);
+            int h = Integer.parseInt(parts[1]);
+            if (w < RuntimeEnv.MIN_DISPLAY || w > RuntimeEnv.MAX_DISPLAY
+                    || h < RuntimeEnv.MIN_DISPLAY || h > RuntimeEnv.MAX_DISPLAY) {
+                return null;
+            }
+            return new int[]{w, h};
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** w/h <= 0 means "follow the phone's own screen". */
+    private void applyDisplaySize(int w, int h) {
+        if (w <= 0 || h <= 0) {
+            RuntimeEnv.setCustomDisplaySize(this, null, null);
+            toast(getString(R.string.display_applied_native));
+        } else {
+            RuntimeEnv.setCustomDisplaySize(this, w, h);
+            toast(getString(R.string.display_applied, w, h));
+        }
+        int[] size = RuntimeEnv.displaySize(this);
+        vncZoom.setRemoteSize(size[0], size[1]);
+        restartBackendAndReload();
     }
 
     private void showLanDialog() {

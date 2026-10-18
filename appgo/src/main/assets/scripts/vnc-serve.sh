@@ -18,11 +18,11 @@ export LANG=C.UTF-8
 
 DISPLAY_NUM=:99
 export DISPLAY="${DISPLAY_NUM}"
-# Virtual desktop geometry, passed in by the app as the phone's *portrait*
-# aspect ratio. Matching the phone's shape means noVNC's fit-to-view wastes as
-# little of the login screen as possible; keeping the short side wide (1080px)
-# means a fresh Camoufox window, which picks its own size, cannot end up larger
-# than the desktop and get clipped. The default keeps the script usable alone.
+# Virtual desktop geometry, chosen in the app's 「显示分辨率」 menu (default:
+# the phone's own portrait aspect). Camoufox picks its own window size — there
+# is no window manager here and upstream passes no size arguments — so the
+# desktop has to be big enough to contain that window, otherwise the browser is
+# clipped by the framebuffer edge. The default keeps the script usable alone.
 SCREEN="${VNC_SCREEN:-1080x1920}"
 
 # Clean up anything left over from a previous attempt.

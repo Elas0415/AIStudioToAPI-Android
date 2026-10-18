@@ -33,6 +33,17 @@
     <string name="lan_admin_password">管理端账号：admin\n管理端密码：%1$s</string>
     <string name="lan_disabled">已关闭局域网访问</string>
 
+    <string name="menu_display">显示分辨率</string>
+    <string name="display_title">显示分辨率</string>
+    <string name="display_message">登录窗口里那个浏览器所在的虚拟桌面大小。调大分辨率能让浏览器窗口完整可见（整体变小，用双指缩放看细节）；改完会自动重启服务与显示。</string>
+    <string name="display_native">跟随手机（竖屏，默认）</string>
+    <string name="display_custom">自定义…</string>
+    <string name="display_custom_title">自定义分辨率</string>
+    <string name="display_custom_hint">宽x高，例如 1600x1000</string>
+    <string name="display_invalid">格式不对：请填 宽x高（%1$d-%2$d），例如 1600x1000</string>
+    <string name="display_applied">显示分辨率：%1$d×%2$d，正在重启服务…</string>
+    <string name="display_applied_native">已改为跟随手机屏幕，正在重启服务…</string>
+
     <string name="battery_title">后台保活设置</string>
     <string name="battery_message">将本应用加入电池优化白名单，避免服务在后台被系统杀掉。\n建议同时允许自启动。</string>
     <string name="battery_go">去设置</string>

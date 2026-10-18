@@ -28,6 +28,11 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/action_display"
+        android:title="@string/menu_display"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/action_battery"
         android:title="@string/menu_battery"
         app:showAsAction="never" />

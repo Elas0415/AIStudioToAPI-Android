@@ -1,6 +1,7 @@
 package com.aistudio2api.launcher;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.res.AssetManager;
 import android.util.Log;
 
@@ -83,6 +84,66 @@ final class RuntimeEnv {
         } catch (Exception e) {
             return new int[]{shortSide, 1920};
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Display resolution (Termux:X11 style)
+    // ------------------------------------------------------------------
+
+    /*
+     * The virtual desktop the login window is drawn on exists only as Xvfb's
+     * -screen geometry, so changing it means restarting the display session.
+     * The choice lives in SharedPreferences, not in the JSON app config, because
+     * writeAppConfig() rewrites that file from scratch on every backend start.
+     */
+
+    private static final String PREFS = "a2api_display";
+    private static final String PREF_W = "display_w";
+    private static final String PREF_H = "display_h";
+
+    /** Sane bounds for a hand-typed geometry. */
+    static final int MIN_DISPLAY = 320;
+    static final int MAX_DISPLAY = 4096;
+
+    private static SharedPreferences displayPrefs(Context ctx) {
+        return ctx.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    /** The user-picked geometry, or null while following the phone's screen. */
+    static int[] customDisplaySize(Context ctx) {
+        try {
+            SharedPreferences p = displayPrefs(ctx);
+            int w = p.getInt(PREF_W, 0);
+            int h = p.getInt(PREF_H, 0);
+            if (w >= MIN_DISPLAY && w <= MAX_DISPLAY
+                    && h >= MIN_DISPLAY && h <= MAX_DISPLAY) {
+                return new int[]{w, h};
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /** Pass null to go back to following the phone. */
+    static void setCustomDisplaySize(Context ctx, Integer w, Integer h) {
+        SharedPreferences.Editor e = displayPrefs(ctx).edit();
+        if (w == null || h == null) {
+            e.remove(PREF_W).remove(PREF_H);
+        } else {
+            e.putInt(PREF_W, w).putInt(PREF_H, h);
+        }
+        e.apply();
+    }
+
+    /**
+     * Geometry of the virtual desktop: the user's choice when one is set,
+     * otherwise the phone's own portrait aspect. A bigger desktop means a
+     * Camoufox window (which sizes itself) is fully visible instead of being
+     * clipped by the framebuffer edge.
+     */
+    static int[] displaySize(Context ctx) {
+        int[] custom = customDisplaySize(ctx);
+        return custom != null ? custom : virtualScreenSize(ctx);
     }
 
     static final String DEFAULT_API_KEY = "123456";
@@ -642,7 +703,8 @@ final class RuntimeEnv {
         // same values from RuntimeEnv.DISPLAY.
         // The WAA workers are launched with -headless, so they ignore DISPLAY.
         env.put("DISPLAY", DISPLAY);
-        int[] screen = virtualScreenSize(ctx);
+        // Xvfb's geometry, driven by the 「显示分辨率」 setting.
+        int[] screen = displaySize(ctx);
         env.put("VNC_SCREEN", screen[0] + "x" + screen[1]);
         env.put("HOME", "/root");
         env.put("TMPDIR", "/tmp");
