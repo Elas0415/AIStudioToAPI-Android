@@ -99,6 +99,8 @@ public class MainActivity extends AppCompatActivity {
     private int vncLoadToken;
     /** Last remote desktop size reported by the page (see {@link VncBridge}). */
     private int vncRemoteW, vncRemoteH;
+    /** Last geometry reported by the login page (see VncBridge#onMetrics). */
+    private String vncMetrics;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -279,6 +281,10 @@ public class MainActivity extends AppCompatActivity {
                 askLoginText();
                 return true;
             }
+            if (id == R.id.login_info) {
+                showLoginInfo();
+                return true;
+            }
             if (id == R.id.login_reconnect) {
                 reloadVncPage();
                 return true;
@@ -344,6 +350,39 @@ public class MainActivity extends AppCompatActivity {
         vncWebView.evaluateJavascript(
                 "window.__a2api && window.__a2api.typeText(" + quoted + ")", null);
         toast(getString(R.string.login_type_sent, text.length()));
+    }
+
+    /**
+     * 「适配信息」: the numbers that tell a page-fit problem from a remote-window
+     * problem. When the canvas matches the view, the page really is showing the
+     * whole framebuffer — if the picture is still cut at the right edge, the
+     * browser window itself is drawn outside the X screen (tinywm's job, see
+     * appgo/src/main/native/tinywm.c) and no amount of page scaling can bring
+     * those pixels back, because x11vnc never captured them.
+     */
+    private void showLoginInfo() {
+        String json = vncMetrics;
+        if (!loginOverlayVisible || json == null) {
+            toast(getString(R.string.login_info_none));
+            return;
+        }
+        String body;
+        try {
+            org.json.JSONObject o = new org.json.JSONObject(json);
+            body = getString(R.string.login_info_body,
+                    o.optString("fb", "-"),
+                    o.optString("view", "-"),
+                    o.optString("canvas", "-"),
+                    o.optString("scale", "-"),
+                    o.optString("overflow", "-"));
+        } catch (Exception e) {
+            body = json;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.login_info_title)
+                .setMessage(body + "\n\n" + getString(R.string.login_info_hint))
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
     }
 
     /**
@@ -445,6 +484,18 @@ public class MainActivity extends AppCompatActivity {
                 vncRemoteH = height;
                 setRemoteSize(width, height);
             });
+        }
+
+        /**
+         * Geometry measured inside the page: framebuffer, view, canvas, fit
+         * scale and whether the canvas overflows the view. Logged and shown by
+         * 「适配信息」; the numbers distinguish "the page does not fit the
+         * desktop" from "the browser window is drawn outside the desktop".
+         */
+        @JavascriptInterface
+        public void onMetrics(String json) {
+            Log.i(TAG, "novnc metrics " + json);
+            handler.post(() -> vncMetrics = json);
         }
     }
 

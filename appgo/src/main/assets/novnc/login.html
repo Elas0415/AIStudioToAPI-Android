@@ -16,14 +16,32 @@
   all live in the app's own app bar (see MainActivity / login_menu.xml). All this
   page adds is a boot notice that goes away as soon as the remote desktop is no
   longer a blank screen.
+
+  What this page must NOT do is scale the picture on its own. If the remote
+  desktop ever looks "clipped", the missing pixels are not in the canvas: the
+  canvas is the whole framebuffer, and the framebuffer is what x11vnc captured.
+  A browser window that is drawn outside the X screen is simply not in that
+  image (tinywm in the rootfs is what keeps Camoufox inside it). So the page
+  only ever re-runs noVNC's own fit (`scaleViewport`) when the view's size
+  changes, and reports the numbers to the app (menu 「适配信息」) instead of
+  hiding a geometry problem behind a transform.
 -->
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
 <title>登录窗口</title>
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    box-sizing: border-box; background: #000; overflow: hidden;
+    overscroll-behavior: none;
+  }
+  /* The view noVNC fits into: exactly the WebView, never scrollable, so the
+     canvas can never be pushed partly off-screen by the document itself. */
+  #screen {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    overflow: hidden;
+  }
   /* Do not style the canvas: noVNC sets its size inline from the fit scale,
      and overriding it stretches the remote desktop out of shape. */
-  #screen { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
   #boot {
     position: absolute; left: 0; right: 0; top: 50%; z-index: 5;
     transform: translateY(-50%);
@@ -112,7 +130,72 @@ function reportRemoteSize() {
     lastRemoteW = size[0];
     lastRemoteH = size[1];
     bridge(null, lastRemoteW, lastRemoteH);
+    reportMetrics();
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * View fit (menu 「适配信息」 reports these numbers to the app).
+ *
+ * noVNC keeps the canvas at the framebuffer's resolution and fits it into
+ * #screen with `scaleViewport`. Since the app sizes this view to the remote
+ * desktop, that fit resolves to 1:1 (scale 1.0, canvas == view); the fit is
+ * re-run whenever the view's size changes (soft keyboard, rotation, overlay
+ * re-shown) by re-asserting `scaleViewport`, which is idempotent and never
+ * stacks a second scale on top of noVNC's own.
+ * ------------------------------------------------------------------ */
+let refitQueued = false;
+
+function metrics() {
+  const canvas = screenEl.querySelector('canvas');
+  const fb = remoteSize();
+  const viewW = screenEl.clientWidth;
+  const viewH = screenEl.clientHeight;
+  const rect = canvas ? canvas.getBoundingClientRect() : null;
+  const canvasW = rect ? Math.round(rect.width) : 0;
+  const canvasH = rect ? Math.round(rect.height) : 0;
+  return {
+    fb: fb ? fb[0] + 'x' + fb[1] : '-',
+    view: viewW + 'x' + viewH,
+    canvas: canvasW + 'x' + canvasH,
+    scale: fb && fb[0] ? Number((canvasW / fb[0]).toFixed(3)) : 0,
+    overflow: (canvasW > viewW + 1 || canvasH > viewH + 1) ? 'yes' : 'no',
+  };
+}
+
+function reportMetrics() {
+  try {
+    const a = window.AndroidVnc;
+    if (a && a.onMetrics) a.onMetrics(JSON.stringify(metrics()));
+  } catch (e) { /* page still usable without the app */ }
+}
+
+function refit() {
+  refitQueued = false;
+  if (rfb) {
+    try { rfb.scaleViewport = true; } catch (e) { /* ignore */ }
+  }
+  reportRemoteSize();
+  reportMetrics();
+}
+
+function scheduleRefit() {
+  if (refitQueued) return;
+  refitQueued = true;
+  requestAnimationFrame(refit);
+}
+
+window.addEventListener('resize', scheduleRefit);
+window.addEventListener('orientationchange', scheduleRefit);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', scheduleRefit);
+}
+document.addEventListener('visibilitychange', () => {
+  // The overlay was hidden and is visible again: the view has a size again.
+  if (!document.hidden) scheduleRefit();
+});
+if (typeof ResizeObserver === 'function') {
+  new ResizeObserver(scheduleRefit).observe(screenEl);
 }
 
 /* ------------------------------------------------------------------ *
@@ -196,6 +279,8 @@ function connect() {
       bootTextEl.textContent = '正在启动登录浏览器…';
       rfb.focus();
       reportRemoteSize();
+      // The framebuffer size only exists now, so this first fit is the real one.
+      scheduleRefit();
       // The framebuffer is readable now; the poll above hides the notice as
       // soon as Camoufox paints its window.
       watchBoot();
@@ -352,6 +437,10 @@ window.__a2api = {
   },
   keyboard() {
     focusIme();
+  },
+  // Measured geometry, for the app's 「适配信息」 dialog.
+  metrics() {
+    return JSON.stringify(metrics());
   },
 };
 

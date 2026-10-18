@@ -27,8 +27,13 @@
     <string name="login_menu_fit">适配（回到整屏）</string>
     <string name="login_menu_keyboard">显示键盘</string>
     <string name="login_menu_type">输入文本…</string>
+    <string name="login_menu_info">适配信息</string>
     <string name="login_menu_reconnect">重连</string>
     <string name="login_menu_back">返回界面</string>
+    <string name="login_info_title">登录窗口适配信息</string>
+    <string name="login_info_none">尚未连接到远程桌面</string>
+    <string name="login_info_body">远程桌面（framebuffer）：%1$s\n视图（WebView）：%2$s\n画面（canvas）：%3$s\n缩放比例：%4$s\n画面是否溢出视图：%5$s</string>
+    <string name="login_info_hint">画面尺寸与视图一致时，页面显示的就是完整画面。若此时画面仍被裁剪，说明浏览器窗口本身画到了远程桌面之外（窗口管理器未生效），请反馈上面这组数值。</string>
     <string name="login_type_title">输入文本</string>
     <string name="login_type_message">逐字符发送到登录窗口里的浏览器。换行会作为回车发送，适合输入验证码、密码或搜索词。</string>
     <string name="login_type_hint">要发送的文本</string>

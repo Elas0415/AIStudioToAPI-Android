@@ -80,12 +80,27 @@ runtime/
   桌面比屏幕宽就等比缩小留黑边（可用双指缩放看细节）。改完自动重启服务与显示会话
   （Xvfb 尺寸只在启动时生效；旋转屏幕后同理，重启服务即按新方向开屏）。
 - **登录窗口铺满桌面（tinywm）**：`src/main/native/tinywm.c` 只依赖 `libX11`，启动时
-  接管 SubstructureRedirect，`MapRequest` 一律改成整屏（0,0,宽,高）再 map，
-  `ConfigureRequest` 也强制保持整屏（页面刷新不能把窗口缩回去），并支持点击聚焦，
-  保证键盘输入仍到达浏览器；override-redirect 窗口（下拉菜单、气泡）和小于 200×200
-  的辅助窗口不动。若已有窗口管理器在跑则直接退出，不会破坏显示。编译：
-  `scripts/build-tinywm.sh`（用 `aarch64-linux-gnu-gcc` 链接 rootfs 里的 `libX11.so.6`），
-  产物 `assets/scripts/tinywm` 每次启动由 `RuntimeEnv` 部署到 rootfs 的 `/usr/local/bin`。
+  接管 SubstructureRedirect，把每个「应用窗口」改成整屏（0,0,宽,高）并保持不被缩回去，
+  同时支持点击聚焦，保证键盘输入仍到达浏览器；override-redirect 窗口（下拉菜单、气泡）
+  和小于 100×100 的辅助窗口不动。若已有窗口管理器在跑则直接退出，不会破坏显示。
+  编译：`scripts/build-tinywm.sh`（用 `aarch64-linux-gnu-gcc` 链接 rootfs 里的
+  `libX11.so.6`），产物 `assets/scripts/tinywm` 每次启动由 `RuntimeEnv` 部署到 rootfs 的
+  `/usr/local/bin`。
+  - **为什么必须「窗口长大了再接管」而不是只在 map 时判断**：Firefox/GTK 不会按最终尺寸
+    map 主窗口，而是先 map 一个 10×10 的占位窗口、之后再 resize 成真实尺寸。用这个 rootfs
+    里的 Camoufox（135.0.1-beta.24）在真实 X 服务器上实测：
+    `0x200001 "Firefox": ("camoufox-default" "Camoufox-default") 10x10+10+10`。
+    只看 map 时刻的尺寸（旧实现是 `<200×200 就跳过`）会永远不接管浏览器窗口，随后那条
+    `ConfigureRequest` 又被当作「非托管窗口」原样放行 —— 于是窗口保持自己的尺寸（例如
+    1280×720 或 1920×1080），在 1080 宽的桌面上右侧 200~840 px 直接画到 framebuffer 之外，
+    x11vnc 根本拍不到，noVNC 忠实显示的就是「被裁掉右边的浏览器」。这也是「远端桌面尺寸
+    明明等于手机屏幕、画面却还是缺一块」的真正原因（**裁剪发生在远端，不在页面**）。
+    现在接管分三条路：map 时就够大的窗口、`ConfigureRequest` 把未托管窗口放大到应用尺寸时、
+    以及每 1 秒的看门狗（重扫 root 子窗口 + 复核已接管窗口的几何）。实测（Xvfb 1080×2224）：
+    占位窗口放大到 1280×720 → 立刻变成 1080×2224 铺满；已存在的 1920×1080 窗口被看门狗
+    接管；150×90 / 90×150 的小窗口保持不动。
+  - 日志在 `/tmp/tinywm.log`（`TINYWM_VERBOSE=1` 时连看门狗的每次纠正也记）；
+    `vnc-serve.sh` 启动后会检查进程并在日志里写明是否生效。
 - **后台保活**：菜单 → 后台保活设置 → 申请忽略电池优化（前台服务 + `START_STICKY` + 崩溃重启）
 - **桌面浏览器方式打开**：默认即等价于 Chrome 的「桌面版网站」
   - 桌面 Chrome UA（`Windows NT 10.0; Win64; x64 ... Chrome/126`）
@@ -123,7 +138,17 @@ Camoufox，并由请求本身一直阻塞到用户登录完成。
 （对照原项目 `:app` 的 VNC 登录效果）：
 
 - 应用栏标题是 `AIStudio2API`，副标题显示连接状态（连接上并出现画面后自动清空），
-  溢出菜单里是全部操作：**适配（回到整屏）**、**输入文本…**、**重连**、**返回界面**
+  溢出菜单里是全部操作：**适配（回到整屏）**、**显示键盘**、**输入文本…**、**适配信息**、
+  **重连**、**返回界面**
+- **适配信息**：把页面实测的几何报出来（远程桌面 framebuffer、视图、canvas、缩放比例、
+  是否溢出），可直接判断「是页面没适配」还是「浏览器窗口画到了远端桌面之外」：
+  画布尺寸 = 视图尺寸就说明页面显示的已经是完整一帧画面；此时若仍被裁，问题在远端
+  （`tinywm`/窗口），因为缺的那些像素从来没有被 x11vnc 采集到。数值同时写进 logcat
+  （`novnc metrics {...}`）
+- **页面只做「重新适配」，不自己做缩放**：`login.html` 在连接成功、视图尺寸变化
+  （软键盘弹出/收起、旋转、覆盖层再次显示）时重新断言 `rfb.scaleViewport = true`，
+  也就是重跑 noVNC 自己的缩放；它不会叠加第二层固定比例或 `transform`，否则就是
+  「把已经很小的画面再缩一次」并且让鼠标/触摸坐标失真
 - 「输入文本…」是原生输入框（不再用 `window.prompt`，WebView 默认不弹 prompt），
   逐字符按 18ms 间隔发给远端浏览器，换行当回车 —— 验证码、密码、搜索词都能直接输
 - 应用栏高度就是 `@dimen/login_bar_height`（56dp），而 `RuntimeEnv` 正是用它来算虚拟桌面

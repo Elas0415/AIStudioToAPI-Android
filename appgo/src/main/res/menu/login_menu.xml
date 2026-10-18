@@ -25,6 +25,11 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/login_info"
+        android:title="@string/login_menu_info"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/login_reconnect"
         android:title="@string/login_menu_reconnect"
         app:showAsAction="never" />

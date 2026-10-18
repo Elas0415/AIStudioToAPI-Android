@@ -44,17 +44,30 @@ Xvfb "${DISPLAY_NUM}" -screen 0 "${SCREEN}x24" -nolock >/tmp/xvfb.log 2>&1 &
 echo "[vnc] Xvfb started"
 sleep 1.5
 
-# tinywm is a ~70 KB window manager built for exactly this job (source:
+# tinywm is the ~66 KB window manager built for exactly this job (source:
 # appgo/src/main/native/tinywm.c, built by scripts/build-tinywm.sh, deployed to
-# /usr/local/bin by RuntimeEnv). It fills every top-level window with the screen,
-# so the headful Camoufox login window always fills the desktop instead of being
+# /usr/local/bin by RuntimeEnv). It fills every application window with the
+# screen, so the headful Camoufox login window fills the desktop instead of being
 # drawn partly outside the framebuffer — which is what noVNC would otherwise
-# show, as a clipped browser. It ignores override-redirect windows (menus,
-# tooltips) and small helper windows, and keeps full-screen even when the page
-# asks to resize. Not fatal if it fails: the display still works, just clipped.
-tinywm >/tmp/tinywm.log 2>&1 &
-echo "[vnc] tinywm started"
-sleep 0.5
+# show, as a clipped browser.
+#
+# It has to cope with the way Firefox/GTK starts up: the main window is mapped
+# as a 10x10 placeholder and only then resized to the real geometry (verified
+# with this rootfs' Camoufox: `0x200001 "Firefox" 10x10+10+10`). tinywm adopts
+# such a window on the ConfigureRequest that grows it, and a 1 s watchdog
+# re-scans the root and re-asserts the full-screen geometry, so the browser is
+# never left larger than the desktop. Override-redirect windows (menus,
+# tooltips) and helper windows under 100x100 are ignored.
+TINYWM_VERBOSE=1 tinywm >/tmp/tinywm.log 2>&1 &
+sleep 0.6
+if pgrep -x tinywm >/dev/null 2>&1; then
+  echo "[vnc] tinywm running: windows are forced to fill ${SCREEN}"
+else
+  # Without a WM the browser keeps its own (usually wider) geometry and noVNC
+  # shows it clipped at the framebuffer edge.
+  echo "[vnc] WARNING: tinywm is not running (see /tmp/tinywm.log) - the login" \
+       "window may be clipped"
+fi
 
 # /usr/local/bin/x11vnc is a wrapper that appends -noshm. -localhost keeps the
 # raw VNC port off the LAN; only websockify (bound to loopback) exposes it.
