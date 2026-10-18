@@ -25,6 +25,7 @@
 
     <!-- 登录窗口应用栏的溢出菜单 -->
     <string name="login_menu_fit">适配（回到整屏）</string>
+    <string name="login_menu_keyboard">显示键盘</string>
     <string name="login_menu_type">输入文本…</string>
     <string name="login_menu_reconnect">重连</string>
     <string name="login_menu_back">返回界面</string>

@@ -271,6 +271,10 @@ public class MainActivity extends AppCompatActivity {
                 vncZoom.reset();
                 return true;
             }
+            if (id == R.id.login_keyboard) {
+                showLoginKeyboard();
+                return true;
+            }
             if (id == R.id.login_type) {
                 askLoginText();
                 return true;
@@ -290,6 +294,19 @@ public class MainActivity extends AppCompatActivity {
     /** Usability of the login window before/while the browser is on screen. */
     private void setLoginStatus(int resId) {
         loginToolbar.setSubtitle(resId == 0 ? null : getString(resId));
+    }
+
+    /**
+     * Brings up the soft keyboard for the login window. The remote desktop is a
+     * canvas, so the page focuses an invisible textarea; tapping the desktop
+     * does this automatically, this menu item is the explicit way.
+     */
+    private void showLoginKeyboard() {
+        if (!loginOverlayVisible) {
+            return;
+        }
+        vncWebView.evaluateJavascript(
+                "window.__a2api && window.__a2api.keyboard()", null);
     }
 
     /** Sends raw text to the remote browser (newline = Return). */

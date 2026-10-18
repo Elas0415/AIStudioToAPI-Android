@@ -38,10 +38,25 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   #boot.gone { display: none; }
+  /*
+    The remote desktop is a canvas, so Android would never show the soft
+    keyboard: a canvas is not editable. This off-screen textarea is the
+    editable element the IME types into; the page diffs it and forwards the
+    characters. pointer-events:none keeps every touch going to noVNC, so
+    clicking/zooming the remote browser is unaffected.
+  */
+  #ime {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    z-index: 4; margin: 0; padding: 0; border: 0; resize: none;
+    background: transparent; color: transparent; caret-color: transparent;
+    opacity: 0; pointer-events: none;
+  }
 </style>
 </head>
 <body>
 <div id="screen"></div>
+<textarea id="ime" aria-hidden="true" autocomplete="off" autocorrect="off"
+          autocapitalize="off" spellcheck="false" tabindex="-1"></textarea>
 <div id="boot"><div class="ring"></div><div id="bootText">正在启动登录浏览器…</div></div>
 
 <script type="module">
@@ -50,6 +65,7 @@ import RFB from './core/rfb.js';
 const screenEl = document.getElementById('screen');
 const bootEl = document.getElementById('boot');
 const bootTextEl = document.getElementById('bootText');
+const imeEl = document.getElementById('ime');
 
 let rfb = null;
 let bootTimer = null;
@@ -243,6 +259,89 @@ function sendText(text) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Soft keyboard (IME) passthrough.
+ *
+ * A tap on the remote desktop focuses an invisible textarea, which is what
+ * makes Android show its keyboard; typed text is diffed and sent as key
+ * events (Chinese/emoji included: BMP chars map to their Unicode keysym).
+ * ------------------------------------------------------------------ */
+const XK_BACKSPACE = 0xFF08;
+const XK_TAB = 0xFF09;
+const XK_DELETE = 0xFFFF;
+
+let imeComposing = false;
+
+function focusIme() {
+  try {
+    imeEl.focus({ preventScroll: true });
+  } catch (e) {
+    try { imeEl.focus(); } catch (e2) { /* no IME available */ }
+  }
+}
+
+function flushIme() {
+  const text = imeEl.value;
+  if (!text) return;
+  imeEl.value = '';
+  if (rfb) sendText(text);
+}
+
+imeEl.addEventListener('compositionstart', () => { imeComposing = true; });
+imeEl.addEventListener('compositionend', () => { imeComposing = false; flushIme(); });
+imeEl.addEventListener('input', () => { if (!imeComposing) flushIme(); });
+imeEl.addEventListener('keydown', (e) => {
+  if (!rfb) return;
+  if (e.key === 'Backspace' && imeEl.value === '') {
+    tapKey(XK_BACKSPACE);
+    e.preventDefault();
+  } else if (e.key === 'Delete' && imeEl.value === '') {
+    tapKey(XK_DELETE);
+    e.preventDefault();
+  } else if (e.key === 'Tab') {
+    tapKey(XK_TAB);
+    e.preventDefault();
+  } else if (e.key === 'Enter') {
+    // Send Return instead of letting the textarea buffer a newline, so the
+    // remote page never sees a double Return.
+    tapKey(XK_RETURN);
+    e.preventDefault();
+  }
+});
+
+// Tap (not pinch, not drag) = "I want to type": bring the keyboard up. The
+// touch has already gone to noVNC by then, so clicking a field still works.
+let tapStart = 0;
+let tapX = 0;
+let tapY = 0;
+let multiTouch = false;
+
+screenEl.addEventListener('touchstart', (e) => {
+  if (e.touches.length > 1) {
+    multiTouch = true;
+    return;
+  }
+  multiTouch = false;
+  tapStart = Date.now();
+  tapX = e.touches[0].clientX;
+  tapY = e.touches[0].clientY;
+}, { passive: true });
+
+screenEl.addEventListener('touchend', (e) => {
+  if (e.touches.length > 0) return;
+  const wasMulti = multiTouch;
+  multiTouch = false;
+  if (wasMulti) return;
+  const t = e.changedTouches && e.changedTouches[0];
+  if (!t) return;
+  const moved = Math.abs(t.clientX - tapX) + Math.abs(t.clientY - tapY);
+  if (Date.now() - tapStart < 350 && moved < 16) {
+    focusIme();
+    // The tap's default action may move focus back to the canvas.
+    setTimeout(focusIme, 60);
+  }
+}, { passive: true });
+
+/* ------------------------------------------------------------------ *
  * Interface used by MainActivity via evaluateJavascript().
  * ------------------------------------------------------------------ */
 window.__a2api = {
@@ -250,6 +349,9 @@ window.__a2api = {
     if (!rfb || typeof text !== 'string') return;
     try { rfb.focus(); } catch (e) { /* ignore */ }
     sendText(text);
+  },
+  keyboard() {
+    focusIme();
   },
 };
 

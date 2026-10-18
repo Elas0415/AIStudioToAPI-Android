@@ -15,6 +15,11 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/login_keyboard"
+        android:title="@string/login_menu_keyboard"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/login_type"
         android:title="@string/login_menu_type"
         app:showAsAction="never" />
