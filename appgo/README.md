@@ -67,18 +67,25 @@ runtime/
   （`ADMIN_AUTH_ENABLED=true`）并生成管理端密码；对话框里会显示 `admin` + 该密码，重新打开
   菜单也能看到。上游控制台默认只接受本机请求，其他设备必须先用这套账号登录，否则会返回
   `control_plane_forbidden`（关闭时保持免登录，本机 WebView 打开即可用）
-- **显示分辨率**：菜单 → 显示分辨率 → 「跟随屏幕（1:1 铺满，默认）」/ 1920×1080 / 1280×1024 /
-  1440×900 / 1280×800 / 自定义（`宽x高`，320-4096）。这个值就是 Xvfb `-screen` 的几何尺寸
-  （经 `VNC_SCREEN` 传给 `vnc-serve.sh`）。默认值不是拍脑袋的固定分辨率，而是**登录视图
-  自己的像素尺寸**（屏幕真实像素宽 × (高 − 应用栏高度)，见 `RuntimeEnv.virtualScreenSize`），
-  于是远端桌面和承载它的视图像素网格完全重合，noVNC 的「缩放到适应」等于 1:1：
-  浏览器铺满整屏、没有黑边、也不做任何缩放，字迹是原生清晰度 —— 和原项目
-  `:app`（AIStudioToAPI）VNC 登录把 `widthPixels`/`heightPixels-60dp` 交给后端的做法一致。
+- **显示分辨率**：菜单 → 显示分辨率 → 「跟随手机横屏（长边×短边−顶栏，1:1 铺满）」/ **1280×720（默认）** /
+  1920×1080 / 1280×1024 / 1440×900 / 1280×800 / 自定义（`宽x高`，320-4096）。这个值就是 Xvfb
+  `-screen` 的几何尺寸（经 `VNC_SCREEN` 传给 `vnc-serve.sh`）。
+  - **登录窗口是横屏的**：点「浏览器登录」时 `MainActivity` 把 Activity 切成
+    `SCREEN_ORIENTATION_LANDSCAPE`，关掉登录窗口再切回 `UNSPECIFIED`。manifest 里的
+    `configChanges="orientation|screenSize"` 让旋转不重建 Activity，两个 WebView 都活着；
+    `login.html` 监听 `resize`/`orientationchange`/`ResizeObserver`，视图尺寸一变就重新执行
+    noVNC 自己的适配，所以旋转后画面仍然完整。Google 登录页在宽视口下才会切成它的双栏卡片
+    （桌面版式），这就是登录窗口要横屏的原因。
+  - **默认 1280×720**：一个普通桌面浏览器的视口尺寸/形状。桌面比手机横屏视口小，noVNC 会把
+    它等比放大到铺满高度（约 1.27×），左右留黑边 —— 想要严格 1:1、无黑边，就选「跟随手机横屏」：
+    那是登录视图自己的像素尺寸（屏幕长边 × (短边 − 应用栏)，见 `RuntimeEnv.virtualScreenSize`），
+    远端桌面和承载它的视图像素网格完全重合，noVNC 的「缩放到适应」等于 1:1、字迹是原生清晰度
+    —— 和原项目 `:app`（AIStudioToAPI）VNC 登录把 `widthPixels`/`heightPixels-60dp` 交给后端的
+    做法一致，只是方向取横屏。
   **Camoufox 的窗口大小不由我们决定**（上游没传窗口尺寸参数），所以 rootfs 里跑一个自建的
-  极简窗口管理器 `tinywm`（见下）把每个顶层窗口铺满桌面：无论选哪种分辨率、无论竖屏横屏，
-  浏览器都完整可见，不再被 framebuffer 裁掉。选固定分辨率只会改变「一次能看到多少内容」：
-  桌面比屏幕宽就等比缩小留黑边（可用双指缩放看细节）。改完自动重启服务与显示会话
-  （Xvfb 尺寸只在启动时生效；旋转屏幕后同理，重启服务即按新方向开屏）。
+  极简窗口管理器 `tinywm`（见下）把每个顶层窗口铺满桌面：无论选哪种分辨率，浏览器都完整可见，
+  不再被 framebuffer 裁掉。改完自动重启服务与显示会话（Xvfb 尺寸只在启动时生效；旋转屏幕后
+  同理，重启服务即按新方向开屏）。
 - **登录窗口铺满桌面（tinywm）**：`src/main/native/tinywm.c` 只依赖 `libX11`，启动时
   接管 SubstructureRedirect，把每个「应用窗口」改成整屏（0,0,宽,高）并保持不被缩回去，
   同时支持点击聚焦，保证键盘输入仍到达浏览器；override-redirect 窗口（下拉菜单、气泡）
@@ -152,7 +159,13 @@ Camoufox，并由请求本身一直阻塞到用户登录完成。
 - 「输入文本…」是原生输入框（不再用 `window.prompt`，WebView 默认不弹 prompt），
   逐字符按 18ms 间隔发给远端浏览器，换行当回车 —— 验证码、密码、搜索词都能直接输
 - 应用栏高度就是 `@dimen/login_bar_height`（56dp），而 `RuntimeEnv` 正是用它来算虚拟桌面
-  高度，所以视图与远端 framebuffer 尺寸严格一致，默认状态就是 1:1 铺满
+  高度，所以视图与远端 framebuffer 尺寸严格一致（选「跟随手机横屏」时即 1:1 铺满）
+- **登录窗口是横屏的**：打开时 `setRequestedOrientation(LANDSCAPE)`，关闭时回到
+  `UNSPECIFIED`；旋转后视图尺寸变化，页面按上面那条规则重新适配。因此
+  `login.html` 必须是最新的那份（带 `resize`/`orientationchange`/`ResizeObserver`）——
+  `RuntimeEnv.NOVNC_MARKER` 就是干这个的：改 `assets/novnc` 下任何文件都要同时改它，
+  否则 `deployNovnc()` 会因为 marker 已存在而**直接跳过复制**，设备上继续跑旧页面
+  （旧页面完全没有 resize 处理，旋转后会留着旧的缩放比例）
 - **软键盘**：远端桌面是 canvas，Android 永远不会为它弹键盘，所以页面里放了一个透明的
   textarea 当输入目标：**点一下桌面**（单指轻点，捏合不算）就会聚焦它、系统键盘随之弹出，
   输入的内容（含中文/表情，按 Unicode keysym）逐字符发给远端，退格/回车/Tab 也照发；
