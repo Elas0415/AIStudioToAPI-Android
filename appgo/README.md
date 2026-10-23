@@ -207,9 +207,10 @@ Camoufox，并由请求本身一直阻塞到用户登录完成。
 - 内置 Camoufox 通过 `CAMOUFOX_PATH=/opt/camoufox/camoufox-bin` 复用，不会再去下载
 - **登录浏览器的安全沙箱提示**：PRoot 无法提供 Firefox 内容进程所需的命名空间，必须设置
   `MOZ_DISABLE_CONTENT_SANDBOX=1`；Firefox 146+ 因此会显示
-  “The security sandbox is disabled…” 通知。启动器给 `camoufox-bin` 加了一层包装器，
-  在登录 profile 里注入 `chrome/userChrome.css` 和
-  `toolkit.legacyUserProfileCustomizations.stylesheets=true`，隐藏这个通知栏。
+  “The security sandbox is disabled…” 通知。启动器在 Camoufox 的 AutoConfig
+  （`/opt/camoufox/camoufox.cfg`）里把 `SandboxUtils` 的两个告警函数置空，并在窗口启动后
+  兜底移除通知条；`camoufox-bin` 的包装器再往每个登录 profile 写 `userChrome.css`
+  与 `user.js` 隐藏所有通知容器，两层都在升级时自动刷新（包装器带版本号）。
   沙箱本身仍因 PRoot 限制而关闭，这是运行环境的预期行为，不是登录失败。
 - **Camoufox 版本与上游对齐**：rootfs 内置 `152.0.4-beta.29`（AIStudio2API v0.2.13 的指纹/TLS
   传输基准），`WAA_BACKEND` 默认 `camoufox`。之前打包的 `135.0.1-beta.24` 会被 AI Studio 判为

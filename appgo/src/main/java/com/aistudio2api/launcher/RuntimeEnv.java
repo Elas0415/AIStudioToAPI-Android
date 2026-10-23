@@ -50,8 +50,13 @@ final class RuntimeEnv {
 
     private static final String TAG = "RuntimeEnv";
 
-    /** Bumped whenever the extraction/deploy steps change. */
-    static final String ROOT_MARKER = ".extracted-go-v2";
+    /**
+     * Bumped whenever the extraction/deploy steps change.
+     * v3: the bundled rootfs carries the patched backend (EXTRA_MODELS), so an
+     * existing install has to extract it again; account logins, .env and
+     * runtime/ are preserved across the swap.
+     */
+    static final String ROOT_MARKER = ".extracted-go-v3";
     /**
      * Bumped whenever anything under {@code assets/novnc} changes, otherwise an
      * existing install keeps the previously deployed copy (the deploy is
@@ -629,17 +634,25 @@ final class RuntimeEnv {
     }
 
     /**
-     * Camoufox/Firefox 146+ shows a permanent "The security sandbox is
-     * disabled" notification when MOZ_DISABLE_CONTENT_SANDBOX is set. PRoot
-     * cannot provide the namespaces the sandbox needs, so the variable has to
-     * stay; hide only the browser's notification deck in every login profile.
+     * Camoufox/Firefox 146+ 在 MOZ_DISABLE_CONTENT_SANDBOX=1 时会挂一条常驻通知：
+     * “The security sandbox is disabled…”。PRoot 提供不了内容进程所需的命名空间，
+     * 这个环境变量必须保留，所以只能让通知不出现：
      *
-     * <p>The upstream launcher creates a temporary profile and writes user.js
-     * before starting the browser. A tiny wrapper around camoufox-bin injects
-     * the chrome/userChrome.css override and the stylesheet pref at that point,
-     * so the warning disappears without changing the sandbox or the page.
+     * <ol>
+     *   <li>AutoConfig（{@code /opt/camoufox/camoufox.cfg}）里把
+     *       {@code SandboxUtils} 的两个告警函数改成空实现，并在窗口启动后兜底移除
+     *       残留的通知条；这是根因层的修补，通知根本不会被创建。</li>
+     *   <li>camoufox-bin 外层包装器在每个登录 profile 里写 userChrome.css 与
+     *       user.js，隐藏所有通知容器；AutoConfig 失效时仍有一层兜底。</li>
+     * </ol>
+     *
+     * <p>包装器带版本号：旧版本安装过的包装器会被识别并重写，避免升级后仍跑旧脚本。
      */
+    private static final String SANDBOX_WRAPPER_TAG = "AIStudio2API sandbox-warning wrapper v2";
+    private static final String SANDBOX_AUTOCONFIG_MARK = "AIStudio2API sandbox notices";
+
     private void ensureCamoufoxSandboxWarningSuppressed() {
+        ensureCamoufoxSandboxAutoconfig();
         File bin = new File(rootfs, "opt/camoufox/camoufox-bin");
         if (!bin.isFile()) {
             return;
@@ -654,16 +667,21 @@ final class RuntimeEnv {
                     head = new String(buf, 0, n, StandardCharsets.UTF_8);
                 }
             }
-            if (head.contains("AIStudio2API sandbox-warning wrapper")) {
+            if (head.contains(SANDBOX_WRAPPER_TAG)) {
                 return;
             }
             if (!real.isFile()) {
+                if (head.contains("AIStudio2API sandbox-warning wrapper")) {
+                    // 已经是旧包装器却没有 .real：复制会把包装器当成真二进制套娃，只能保持原样。
+                    Log.w(TAG, "camoufox-bin is a stale wrapper without camoufox-bin.real");
+                    return;
+                }
                 Files.copy(bin.toPath(), real.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 real.setExecutable(true, false);
             }
             String script = "#!/bin/sh\n"
-                    + "# AIStudio2API sandbox-warning wrapper\n"
+                    + "# " + SANDBOX_WRAPPER_TAG + "\n"
                     + "profile=''\n"
                     + "prev=''\n"
                     + "for arg in \"$@\"; do\n"
@@ -674,9 +692,14 @@ final class RuntimeEnv {
                     + "if [ -n \"$profile\" ] && [ -d \"$profile\" ]; then\n"
                     + "  mkdir -p \"$profile/chrome\"\n"
                     + "  cat > \"$profile/chrome/userChrome.css\" <<'CSS'\n"
-                    + "#tab-notification-deck, #notifications-toolbar, .notificationbox-stack { display: none !important; }\n"
+                    + "#notifications-toolbar, #tab-notification-deck, #notification-popup-box,\n"
+                    + ".notificationbox-stack, .global-notificationbox, .popup-notification,\n"
+                    + "#navigator-toolbox > .notificationbox-stack { display: none !important; }\n"
                     + "CSS\n"
-                    + "  printf '%s\\n' 'user_pref(\"toolkit.legacyUserProfileCustomizations.stylesheets\", true);' >> \"$profile/user.js\"\n"
+                    + "  grep -q legacyUserProfileCustomizations.stylesheets \"$profile/user.js\" 2>/dev/null ||\n"
+                    + "    printf '%s\\n' 'user_pref(\"toolkit.legacyUserProfileCustomizations.stylesheets\", true);' >> \"$profile/user.js\"\n"
+                    + "  grep -q warn_unprivileged_namespaces \"$profile/user.js\" 2>/dev/null ||\n"
+                    + "    printf '%s\\n' 'user_pref(\"security.sandbox.warn_unprivileged_namespaces\", false);' >> \"$profile/user.js\"\n"
                     + "fi\n"
                     + "exec \"$(dirname \"$0\")/camoufox-bin.real\" \"$@\"\n";
             Files.write(bin.toPath(), script.getBytes(StandardCharsets.UTF_8));
@@ -686,7 +709,46 @@ final class RuntimeEnv {
         }
     }
 
-    /** Creates the host-shared folder and the rootfs mount point. */
+    /**
+     * 在 Camoufox 的 AutoConfig 末尾追加一段脚本，把沙箱告警从源头消掉。
+     * Camoufox 通过 {@code defaults/pref/local-settings.js} 指定
+     * {@code general.config.filename=camoufox.cfg}，所以该文件在父进程启动时执行。
+     */
+    private void ensureCamoufoxSandboxAutoconfig() {
+        File cfg = new File(rootfs, "opt/camoufox/camoufox.cfg");
+        if (!cfg.isFile()) {
+            return;
+        }
+        try {
+            String text = new String(Files.readAllBytes(cfg.toPath()), StandardCharsets.UTF_8);
+            if (text.contains(SANDBOX_AUTOCONFIG_MARK)) {
+                return;
+            }
+            String block = "\n"
+                    + "// " + SANDBOX_AUTOCONFIG_MARK + "\n"
+                    + "// PRoot 没有非特权命名空间，内容沙箱按设计关闭；把两条提示从源头去掉。\n"
+                    + "try {\n"
+                    + "  const { SandboxUtils } = ChromeUtils.importESModule(\"resource://gre/modules/SandboxUtils.sys.mjs\");\n"
+                    + "  SandboxUtils.maybeWarnAboutDisabledContentSandbox = () => {};\n"
+                    + "  SandboxUtils.maybeWarnAboutMissingUserNamespaces = () => {};\n"
+                    + "} catch (e) {}\n"
+                    + "try {\n"
+                    + "  Services.obs.addObserver(function (subject) {\n"
+                    + "    try {\n"
+                    + "      const box = subject.gNotificationBox;\n"
+                    + "      for (const value of [\"sandbox-content-disabled\", \"sandbox-unprivileged-namespaces\"]) {\n"
+                    + "        const item = box && box.getNotificationWithValue(value);\n"
+                    + "        if (item) box.removeNotification(item);\n"
+                    + "      }\n"
+                    + "    } catch (e) {}\n"
+                    + "  }, \"browser-delayed-startup-finished\");\n"
+                    + "} catch (e) {}\n";
+            Files.write(cfg.toPath(), (text + block).getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            Log.w(TAG, "cannot patch Camoufox autoconfig", e);
+        }
+    }
+
     private void ensureSharedDir() {
         sharedDir();
         File host = new File(rootfs, "mnt/host");
