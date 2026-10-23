@@ -52,11 +52,10 @@ final class RuntimeEnv {
 
     /**
      * Bumped whenever the extraction/deploy steps change.
-     * v3: the bundled rootfs carries the patched backend (EXTRA_MODELS), so an
-     * existing install has to extract it again; account logins, .env and
-     * runtime/ are preserved across the swap.
+     * v4: the bundled rootfs is back to the stock upstream backend (v0.2.14);
+     * the EXTRA_MODELS experiment was reverted.
      */
-    static final String ROOT_MARKER = ".extracted-go-v3";
+    static final String ROOT_MARKER = ".extracted-go-v4";
     /**
      * Bumped whenever anything under {@code assets/novnc} changes, otherwise an
      * existing install keeps the previously deployed copy (the deploy is
@@ -1044,10 +1043,6 @@ final class RuntimeEnv {
         putDefault(values, "MAX_ACTIVE_WORKERS", "2");
         putDefault(values, "WARM_STARTUP_CONCURRENCY", "1");
         putDefault(values, "PER_ACCOUNT_CONCURRENCY", "1");
-        // 上游目录暂时没有列出的模型由 EXTRA_MODELS 注入，Playground 与 Build 两个
-        // 通道都会列出；模板取同代 flash 模型，沿用它的 token 上限与工具能力。
-        putDefault(values, "EXTRA_MODELS",
-                "gemini-3.7-flash=gemini-3.8-flash,gemini-3.5-flash=gemini-3.6-flash");
 
         StringBuilder sb = new StringBuilder();
         sb.append("# 由 Android 启动器维护；管理页保存的设置会保留，重启服务后生效\n");
