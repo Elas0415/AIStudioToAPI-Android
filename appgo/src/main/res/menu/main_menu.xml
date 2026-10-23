@@ -23,13 +23,8 @@
         app:showAsAction="never" />
 
     <item
-        android:id="@+id/action_lan"
-        android:title="@string/menu_lan"
-        app:showAsAction="never" />
-
-    <item
-        android:id="@+id/action_display"
-        android:title="@string/menu_display"
+        android:id="@+id/action_shared"
+        android:title="@string/menu_shared"
         app:showAsAction="never" />
 
     <item

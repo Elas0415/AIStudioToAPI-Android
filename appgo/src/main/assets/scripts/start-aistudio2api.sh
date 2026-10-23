@@ -9,8 +9,13 @@ set -x
 export HOME=/root
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export TMPDIR=/tmp
-export LANG=C.UTF-8
+export LANG="${LANG:-C.UTF-8}"
 export TZ="${TZ:-UTC}"
+
+# The slim rootfs has no ca-certificates package; the launcher rebuilds this
+# bundle on every start (Mozilla roots + the phone's own CA store).
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export SSL_CERT_DIR=/etc/ssl/certs
 
 # The management UI's 「浏览器登录」 drives a *visible* Camoufox, so it needs the
 # virtual display that vnc-serve.sh manages. The Android launcher passes this in;

@@ -81,6 +81,19 @@ public class PinchZoomLayout extends FrameLayout {
         reset();
     }
 
+    /**
+     * Last line of defence against a stale geometry: whatever path changed the
+     * container's bounds (rotation, keyboard, overlay re-show), the child is
+     * re-fitted to the size it really has now.
+     */
+    @Override
+    protected void onLayout(boolean changed, int l, int t, int r, int b) {
+        super.onLayout(changed, l, t, r, b);
+        if (changed) {
+            apply();
+        }
+    }
+
     private void computeBase() {
         int w = getWidth();
         int h = getHeight();
@@ -110,7 +123,16 @@ public class PinchZoomLayout extends FrameLayout {
 
     private void apply() {
         View child = getChildAt(0);
-        if (child == null || baseW <= 0f) {
+        if (child == null) {
+            return;
+        }
+        // Recompute from the container's *current* size before using it. A
+        // rotation or the soft keyboard (adjustResize) can resize this view
+        // between two apply() calls; a base computed for the old height would
+        // leave the child taller than the container and the bottom of the
+        // remote desktop would fall off-screen.
+        computeBase();
+        if (baseW <= 0f) {
             return;
         }
         int w = Math.max(1, Math.round(baseW * scale));

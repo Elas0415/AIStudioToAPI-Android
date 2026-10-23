@@ -10,23 +10,13 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <item
-        android:id="@+id/login_fit"
-        android:title="@string/login_menu_fit"
-        app:showAsAction="never" />
-
-    <item
         android:id="@+id/login_keyboard"
         android:title="@string/login_menu_keyboard"
         app:showAsAction="never" />
 
     <item
-        android:id="@+id/login_type"
-        android:title="@string/login_menu_type"
-        app:showAsAction="never" />
-
-    <item
-        android:id="@+id/login_info"
-        android:title="@string/login_menu_info"
+        android:id="@+id/login_fit"
+        android:title="@string/login_menu_fit"
         app:showAsAction="never" />
 
     <item

@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
@@ -49,6 +50,8 @@ public class ServerService extends Service {
     private volatile Process process;
     private volatile ProotRunner.Session displaySession;
     private int crashCount;
+    /** Keeps the CPU awake while the backend serves long generations. */
+    private PowerManager.WakeLock wakeLock;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -64,9 +67,7 @@ public class ServerService extends Service {
         if (ACTION_RESTART.equals(action)) {
             worker.execute(() -> {
                 crashCount = 0;
-                stopBackendAndUpdate();
-                sleep(700);
-                startBackend();
+                restartBackend();
             });
             return START_STICKY;
         }
@@ -83,15 +84,55 @@ public class ServerService extends Service {
             RuntimeEnv env = new RuntimeEnv(this);
             env.ensureReady();
 
-            String apiKey = env.ensureAppConfig(env.isLanEnabled());
-            env.writeEnvFile(apiKey, env.isLanEnabled());
+            String apiKey = env.ensureAppConfig();
+            env.writeEnvFile(apiKey);
 
             ProcessKiller.killBackendProcesses();
             sleep(400);
 
+            launchBackend(env);
+        } catch (Exception e) {
+            Log.e(TAG, "failed to launch backend", e);
+            running.set(false);
+            updateNotification("启动失败: " + e.getMessage());
+            notifyState(false);
+        }
+    }
+
+    /**
+     * 「重启服务」: re-run {@code ./aistudio2api} only.
+     *
+     * <p>The runtime is already unpacked and the virtual desktop is unrelated to
+     * the backend process, so this stops the process and starts it again without
+     * touching the rootfs or the display session. The new process reads
+     * {@code .env} from scratch, which is exactly how settings saved in the
+     * console take effect.
+     */
+    private synchronized void restartBackend() {
+        if (!running.get() && (process == null || !process.isAlive())) {
+            // Nothing to stop: behave like a normal start (e.g. after 停止服务).
+            startBackend();
+            return;
+        }
+        stopBackendProcess(false);
+        // The virtual desktop's geometry is fixed when Xvnc starts (VNC_SCREEN),
+        // so a service restart must recreate it as well; otherwise a phone
+        // rotation or the follow-the-phone size would keep the old raster.
+        stopDisplay();
+        sleep(700);
+        launchBackend(new RuntimeEnv(this));
+    }
+
+    /** Starts proot/binary and wires its monitor thread. Caller holds the lock. */
+    private synchronized void launchBackend(RuntimeEnv env) {
+        if (running.get() && process != null && process.isAlive()) {
+            return;
+        }
+        try {
             // The backend opens a *visible* Camoufox when the management UI's
             // 「浏览器登录」 button creates an account, so the virtual desktop it
-            // draws on has to be up first.
+            // draws on has to be up first. Kept across restarts when it already
+            // is.
             startDisplay();
 
             ProcessBuilder pb = new ProcessBuilder(env.prootCommand());
@@ -102,8 +143,9 @@ public class ServerService extends Service {
             Process proc = pb.start();
             process = proc;
             running.set(true);
+            acquireWakeLock();
             Log.i(TAG, "aistudio2api backend started via proot");
-            updateNotification("本地服务已启动 (端口 " + RuntimeEnv.PORT + ")");
+            updateNotification("本地服务已启动 (端口 " + env.listenPort() + ")");
             notifyState(true);
 
             Thread monitor = new Thread(() -> monitorProcess(proc), "a2api-monitor");
@@ -118,9 +160,9 @@ public class ServerService extends Service {
     }
 
     /**
-     * Brings up Xvfb :99 + x11vnc + websockify/noVNC so that a headful Camoufox
-     * opened by the backend has somewhere to render. Best effort: a failure only
-     * means the login window will not be displayable, not that the service dies.
+     * Brings up Xvnc :99 + websockify/noVNC so that a headful Camoufox opened by
+     * the backend has somewhere to render. Best effort: a failure only means the
+     * login window will not be displayable, not that the service dies.
      */
     private synchronized void startDisplay() {
         if (displaySession != null && displaySession.isAlive()) {
@@ -188,6 +230,7 @@ public class ServerService extends Service {
                 running.set(false);
                 notifyState(false);
                 if (code == 0) {
+                    releaseWakeLock();
                     updateNotification("服务已停止");
                     return;
                 }
@@ -200,6 +243,7 @@ public class ServerService extends Service {
                         startBackend();
                     }
                 } else {
+                    releaseWakeLock();
                     updateNotification("服务连续崩溃 " + crashCount + " 次，已停止自动重启，请查看日志");
                 }
             }
@@ -207,6 +251,20 @@ public class ServerService extends Service {
     }
 
     private synchronized void stopBackendAndUpdate() {
+        stopBackendProcess(true);
+        updateNotification("服务已停止");
+    }
+
+    /**
+     * Stops the backend.
+     *
+     * <p>{@code includeDisplay} is used by 「停止服务」 and {@link #onDestroy()}:
+     * everything the app started (backend, Camoufox, Xvnc, websockify, tinywm)
+     * goes down. A restart passes {@code false} so the display session survives
+     * and only {@code aistudio2api} plus its browser workers are killed — the
+     * next process is a plain re-exec of the same binary.
+     */
+    private synchronized void stopBackendProcess(boolean includeDisplay) {
         Process proc = process;
         if (proc != null) {
             try {
@@ -219,11 +277,43 @@ public class ServerService extends Service {
             }
             process = null;
         }
-        ProcessKiller.killBackendProcesses();
-        stopDisplay();
+        if (includeDisplay) {
+            ProcessKiller.killBackendProcesses();
+            stopDisplay();
+        } else {
+            ProcessKiller.killServiceProcesses();
+        }
+        releaseWakeLock();
         running.set(false);
         notifyState(false);
-        updateNotification("服务已停止");
+    }
+
+    private void acquireWakeLock() {
+        try {
+            if (wakeLock == null) {
+                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                if (pm == null) {
+                    return;
+                }
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
+                        "aistudio2api:backend");
+                wakeLock.setReferenceCounted(false);
+            }
+            if (!wakeLock.isHeld()) {
+                wakeLock.acquire();
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "cannot acquire wake lock", e);
+        }
+    }
+
+    private void releaseWakeLock() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private void pipeLogs(Process p) {

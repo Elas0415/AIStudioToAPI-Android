@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">AIStudio2API</string>
+    <string name="app_name">buildground</string>
 
     <string name="menu_reload">刷新页面</string>
     <string name="menu_update">检查原项目更新</string>
     <string name="menu_restart">重启服务</string>
     <string name="menu_stop">停止服务</string>
-    <string name="menu_lan">局域网访问</string>
+    <string name="menu_shared">共享目录</string>
     <string name="menu_battery">后台保活设置</string>
     <string name="menu_about">关于</string>
 
@@ -24,42 +24,19 @@
     <string name="login_overlay_background">登录仍在后台进行，完成后会自动刷新界面</string>
 
     <!-- 登录窗口应用栏的溢出菜单 -->
+    <string name="login_menu_keyboard">键盘</string>
     <string name="login_menu_fit">适配（回到整屏）</string>
-    <string name="login_menu_keyboard">显示键盘</string>
-    <string name="login_menu_type">输入文本…</string>
-    <string name="login_menu_info">适配信息</string>
     <string name="login_menu_reconnect">重连</string>
     <string name="login_menu_back">返回界面</string>
-    <string name="login_info_title">登录窗口适配信息</string>
-    <string name="login_info_none">尚未连接到远程桌面</string>
-    <string name="login_info_body">远程桌面（framebuffer）：%1$s\n视图（WebView）：%2$s\n画面（canvas）：%3$s\n缩放比例：%4$s\n画面是否溢出视图：%5$s</string>
-    <string name="login_info_hint">画面尺寸与视图一致时，页面显示的就是完整画面。若此时画面仍被裁剪，说明浏览器窗口本身画到了远程桌面之外（窗口管理器未生效），请反馈上面这组数值。</string>
-    <string name="login_type_title">输入文本</string>
-    <string name="login_type_message">逐字符发送到登录窗口里的浏览器。换行会作为回车发送，适合输入验证码、密码或搜索词。</string>
-    <string name="login_type_hint">要发送的文本</string>
-    <string name="login_type_send">发送</string>
-    <string name="login_type_sent">已发送 %1$d 个字符</string>
-    <string name="login_type_unavailable">登录窗口还没连接上</string>
 
-    <string name="lan_title">局域网访问</string>
-    <string name="lan_message">开启后服务监听 0.0.0.0，同一 Wi-Fi 下的其他设备可访问。会自动开启管理端登录并生成 API Key。</string>
-    <string name="lan_enable">开启</string>
-    <string name="lan_disable">关闭</string>
-    <string name="lan_enabled">已开启局域网访问\n地址：http://%1$s:2048\n其他设备打开该地址后，需用下面的管理端账号登录。</string>
-    <string name="lan_no_ip">已开启，但未获取到局域网 IP，请确认已连接 Wi-Fi。</string>
-    <string name="lan_admin_password">管理端账号：admin\n管理端密码：%1$s</string>
-    <string name="lan_disabled">已关闭局域网访问</string>
+    <!-- 登录窗口的辅助鼠标：左摇杆移动，右按键左右键 -->
+    <string name="login_mouse_joystick">鼠标移动摇杆</string>
+    <string name="login_mouse_left">左键</string>
+    <string name="login_mouse_right">右键</string>
 
-    <string name="menu_display">显示分辨率</string>
-    <string name="display_title">显示分辨率</string>
-    <string name="display_message">登录窗口本身是横屏的，这里设置它里面那个浏览器所在的虚拟桌面大小。默认 1280 × 720（桌面浏览器常见的横屏尺寸，Google 登录页按桌面版式排版）；选「跟随手机」= 手机横屏实际像素（长边 × 短边 − 顶栏），浏览器正好 1:1 铺满、字迹最清晰，但桌面形状跟手机一样很宽。改完会自动重启服务与显示。</string>
-    <string name="display_native">跟随手机横屏（%1$d×%2$d，1:1 铺满）</string>
-    <string name="display_custom">自定义…</string>
-    <string name="display_custom_title">自定义分辨率</string>
-    <string name="display_custom_hint">宽x高，例如 1600x1000</string>
-    <string name="display_invalid">格式不对：请填 宽x高（%1$d-%2$d），例如 1600x1000</string>
-    <string name="display_applied">显示分辨率：%1$d×%2$d，正在重启服务…</string>
-    <string name="display_applied_native">已改为跟随屏幕（1:1 铺满），正在重启服务…</string>
+    <!-- 键盘输入条：输入内容后回车/点「发送」会转发到远端并按下 Return -->
+    <string name="login_ime_hint">输入内容，回车发送</string>
+    <string name="login_ime_send">发送</string>
 
     <string name="battery_title">后台保活设置</string>
     <string name="battery_message">将本应用加入电池优化白名单，避免服务在后台被系统杀掉。\n建议同时允许自启动。</string>
@@ -70,5 +47,5 @@
     <string name="download_saved">已保存到下载目录：%1$s</string>
     <string name="download_failed">下载失败：%1$s</string>
 
-    <string name="about_message">AIStudio2API Android 启动器\n\n将 Mag1cFall/AIStudio2API（Go）通过 PRoot + Ubuntu 24.04 arm64 运行环境打包为 Android 应用。\n\n界面以桌面浏览器方式打开，可直接缩放；点击网页里的「浏览器登录」会自动切到内置浏览器窗口完成 Google 登录。\n\n上游项目采用 MIT 许可证。本应用仅做 Android 打包与平台适配，非官方发布。</string>
+    <string name="about_message">AIStudio2API Android 启动器\n\n将 Mag1cFall/AIStudio2API（Go）通过 PRoot + Ubuntu 24.04 arm64 运行环境打包为 Android 应用。\n\n界面以手机浏览器方式打开；点击网页里的「浏览器登录」会自动切到内置浏览器窗口完成 Google 登录。\n\n上游项目采用 MIT 许可证。本应用仅做 Android 打包与平台适配，非官方发布。</string>
 </resources>

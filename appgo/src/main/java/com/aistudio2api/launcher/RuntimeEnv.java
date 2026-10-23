@@ -9,6 +9,7 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -18,9 +19,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Prepares and describes the embedded PRoot + Ubuntu 24.04 ARM64 runtime that
@@ -34,11 +38,12 @@ import java.util.Map;
  *     opt/aistudio2api/  - the Go backend (binary + .env + auth/ + runtime/)
  *     opt/camoufox/      - Camoufox arm64 browser (from the base rootfs)
  *     opt/novnc/         - noVNC client served by websockify
- *     usr/bin/Xvfb, x11vnc, websockify  - virtual desktop stack (from base rootfs)
+ *     usr/bin/Xvnc       - TigerVNC X server + RFB server (from assets/xvnc)
+ *     usr/bin/websockify - RFB -> WebSocket bridge (from the base rootfs)
  *
  * The virtual desktop exists because the backend's account creation (the 「浏览器
  * 登录」 button in its management UI) drives a *visible* Camoufox browser. The app
- * keeps Xvfb :99 alive next to the service and forwards it as noVNC on
+ * keeps Xvnc :99 alive next to the service and exposes it as noVNC on
  * 127.0.0.1:6080, which the WebView shows while such a request is in flight.
  */
 final class RuntimeEnv {
@@ -46,13 +51,17 @@ final class RuntimeEnv {
     private static final String TAG = "RuntimeEnv";
 
     /** Bumped whenever the extraction/deploy steps change. */
-    static final String ROOT_MARKER = ".extracted-go-v1";
+    static final String ROOT_MARKER = ".extracted-go-v2";
     /**
      * Bumped whenever anything under {@code assets/novnc} changes, otherwise an
      * existing install keeps the previously deployed copy (the deploy is
      * marker-gated). v2: login.html stopped overriding noVNC's canvas sizing.
+     * v4: login.html re-fits (and, if needed, clamps) the canvas whenever the
+     * view resizes, so a stale view size can no longer crop the desktop.
+     * v5: tapping a text field (I-beam cursor) raises the IME, taps elsewhere
+     * put it away; the manual 「显示键盘」/「输入文本」 menu entries are gone.
      */
-    static final String NOVNC_MARKER = ".novnc-go-v3";
+    static final String NOVNC_MARKER = ".novnc-go-v11";
 
     static final int PORT = 2048;
     static final String LOOPBACK = "127.0.0.1";
@@ -79,8 +88,8 @@ final class RuntimeEnv {
      * MainActivity#showLoginOverlay): the long edge of the display becomes the
      * desktop's width, the short edge its height.
      *
-     * <p>Note this is decided when the backend starts (the geometry is Xvfb's
-     * {@code -screen}), so rotating the phone mid-session keeps the old raster
+     * <p>Note this is decided when the backend starts (the geometry is Xvnc's
+     * {@code -geometry}), so rotating the phone mid-session keeps the old raster
      * until the service restarts — the same trade-off the reference project has,
      * because its session is created per login attempt.
      */
@@ -129,8 +138,8 @@ final class RuntimeEnv {
     // ------------------------------------------------------------------
 
     /*
-     * The virtual desktop the login window is drawn on exists only as Xvfb's
-     * -screen geometry, so changing it means restarting the display session.
+     * The virtual desktop the login window is drawn on exists only as Xvnc's
+     * -geometry, so changing it means restarting the display session.
      * The choice lives in SharedPreferences, not in the JSON app config, because
      * writeAppConfig() rewrites that file from scratch on every backend start.
      */
@@ -174,12 +183,17 @@ final class RuntimeEnv {
     }
 
     /**
-     * Geometry of the virtual desktop: the user's choice when one is set,
-     * otherwise {@link #DEFAULT_DISPLAY_W}×{@link #DEFAULT_DISPLAY_H}.
+     * Geometry of the virtual desktop: always the phone's own landscape area
+     * (minus the login app bar).
+     *
+     * <p>The old 1280x720 default made noVNC letterbox the desktop at the sides
+     * of a 2400x1080 phone, which looked like "the browser only uses a small
+     * part of the screen" until the user pinch-zoomed. Matching the view's
+     * pixel grid makes the remote desktop and noVNC 1:1: the browser window
+     * (maximised by tinywm) fills the login view with no zoom or black bars.
      */
     static int[] displaySize(Context ctx) {
-        int[] custom = customDisplaySize(ctx);
-        return custom != null ? custom : new int[]{DEFAULT_DISPLAY_W, DEFAULT_DISPLAY_H};
+        return virtualScreenSize(ctx);
     }
 
     /**
@@ -368,15 +382,11 @@ final class RuntimeEnv {
     }
 
     // ------------------------------------------------------------------
-    // App config (host/port/apiKey/adminPassword), persisted as JSON.
+    // App config (apiKey), persisted as JSON.
     // ------------------------------------------------------------------
 
     String apiKey() {
         return appConfig("apiKey");
-    }
-
-    String adminPassword() {
-        return appConfig("adminPassword");
     }
 
     private String appConfig(String key) {
@@ -393,20 +403,16 @@ final class RuntimeEnv {
     }
 
     /** Reads or creates the persisted app config and returns the API key. */
-    synchronized String ensureAppConfig(boolean lanMode) throws IOException {
+    synchronized String ensureAppConfig() throws IOException {
         String key = apiKey();
         if (key == null || key.isEmpty()) {
             key = DEFAULT_API_KEY;
         }
-        String admin = adminPassword();
-        if (lanMode && (admin == null || admin.isEmpty())) {
-            admin = randomToken(16);
-        }
-        writeAppConfig(lanMode, key, admin);
+        writeAppConfig(key);
         return key;
     }
 
-    private void writeAppConfig(boolean lanMode, String key, String admin) throws IOException {
+    private void writeAppConfig(String key) throws IOException {
         File f = appConfigFile();
         File dir = f.getParentFile();
         if (dir != null && !dir.exists() && !dir.mkdirs()) {
@@ -414,29 +420,103 @@ final class RuntimeEnv {
         }
         try {
             JSONObject o = new JSONObject();
-            o.put("host", lanMode ? "0.0.0.0" : LOOPBACK);
-            o.put("port", PORT);
             o.put("apiKey", key == null ? "" : key);
-            o.put("adminPassword", admin == null ? "" : admin);
             Files.write(f.toPath(), o.toString(2).getBytes(StandardCharsets.UTF_8));
         } catch (org.json.JSONException e) {
             throw new IOException("encode app config: " + e.getMessage(), e);
         }
     }
 
-    boolean isLanEnabled() {
-        try {
-            return "0.0.0.0".equals(new JSONObject(
-                    new String(Files.readAllBytes(appConfigFile().toPath()), StandardCharsets.UTF_8))
-                    .optString("host", LOOPBACK));
-        } catch (Exception ignored) {
+    /**
+     * Port the backend is actually configured to listen on.
+     *
+     * <p>The console's settings page writes {@code LISTEN_ADDR} to .env, so the
+     * app must follow that value instead of assuming {@link #PORT}. The port is
+     * only changed by the console; the LAN toggle changes the host part.
+     */
+    int listenPort() {
+        return parseListenPort(readEnvFile().get("LISTEN_ADDR"), PORT);
+    }
+
+    static int parseListenPort(String address, int fallback) {
+        if (address == null) {
+            return fallback;
         }
-        return false;
+        String value = address.trim();
+        int colon = value.lastIndexOf(':');
+        if (colon >= 0) {
+            value = value.substring(colon + 1).trim();
+        }
+        try {
+            int port = Integer.parseInt(value);
+            return port > 0 && port <= 65535 ? port : fallback;
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
     }
 
     // ------------------------------------------------------------------
     // Runtime preparation
     // ------------------------------------------------------------------
+
+    /**
+     * Moves the state that must survive a rootfs re-extraction out of the old
+     * tree. Auth contains the Google logins (and their browser caches), .env
+     * holds the console settings, and runtime holds the request DB and logs.
+     */
+    private void preserveState(File rootfs, File state) {
+        // A previous upgrade was interrupted after the state was moved aside;
+        // keep that copy instead of replacing it with the (possibly partial)
+        // rootfs that is still on disk.
+        if (new File(state, "auth").exists()
+                || new File(state, ".env").exists()
+                || new File(state, "runtime").exists()) {
+            Log.i(TAG, "reusing rootfs state preserved by an interrupted upgrade");
+            return;
+        }
+        deleteRecursive(state);
+        File backend = new File(rootfs, "opt/aistudio2api");
+        if (!backend.isDirectory()) {
+            return;
+        }
+        if (!state.mkdirs() && !state.isDirectory()) {
+            Log.w(TAG, "cannot create rootfs upgrade state dir");
+            return;
+        }
+        movePath(new File(backend, "auth"), new File(state, "auth"));
+        movePath(new File(backend, ".env"), new File(state, ".env"));
+        movePath(new File(backend, "runtime"), new File(state, "runtime"));
+    }
+
+    private void restoreState(File rootfs, File state) {
+        File backend = new File(rootfs, "opt/aistudio2api");
+        if (!backend.isDirectory() && !backend.mkdirs()) {
+            Log.w(TAG, "cannot create backend dir while restoring state");
+            return;
+        }
+        movePath(new File(state, "auth"), new File(backend, "auth"));
+        movePath(new File(state, ".env"), new File(backend, ".env"));
+        movePath(new File(state, "runtime"), new File(backend, "runtime"));
+        deleteRecursive(state);
+    }
+
+    /** Deletes the target (the fresh rootfs has empty placeholders) and renames. */
+    private void movePath(File from, File to) {
+        if (!from.exists()) {
+            return;
+        }
+        try {
+            if (to.exists()) {
+                deleteRecursive(to);
+            }
+            if (from.renameTo(to)) {
+                return;
+            }
+            Log.w(TAG, "cannot move " + from + " to " + to);
+        } catch (Exception e) {
+            Log.w(TAG, "cannot move " + from + " to " + to, e);
+        }
+    }
 
     /** Extracts everything and builds the rootfs on first run. */
     void ensureReady() throws IOException {
@@ -464,6 +544,10 @@ final class RuntimeEnv {
 
             File tarZst = new File(base, "rootfs.tar.zst");
             copyAsset(am, "rootfs.tar.zst", tarZst);
+            // Account logins, the console's settings and request history live
+            // inside the rootfs; keep them across a rootfs upgrade.
+            File upgradeState = new File(base, "upgrade-state");
+            preserveState(rootfs, upgradeState);
             if (rootfs.exists()) {
                 deleteRecursive(rootfs);
             }
@@ -472,6 +556,7 @@ final class RuntimeEnv {
             }
             extractTar(tarZst, rootfs);
             tarZst.delete();
+            restoreState(rootfs, upgradeState);
 
             makeLibsExecutable(new File(rootfs, "lib"));
             makeLibsExecutable(new File(rootfs, "usr/lib"));
@@ -494,8 +579,12 @@ final class RuntimeEnv {
 
         // Refresh launcher + VNC scripts every start so upgrades apply.
         deployScripts(am);
+        deployCaCertificates(am);
+        ensureCamoufoxFontconfig();
+        ensureCamoufoxSandboxWarningSuppressed();
+        ensureSharedDir();
         deployNovnc(am);
-        deployXvfbWrappers(am);
+        deployDisplayStack(am);
         ensureDevDir();
         writeResolvConf();
         writeHostsFile();
@@ -504,8 +593,7 @@ final class RuntimeEnv {
         // even when a maintenance command (setup --storage-state) runs before the
         // service has ever been started.
         if (!envFile().exists()) {
-            boolean lan = isLanEnabled();
-            writeEnvFile(ensureAppConfig(lan), lan);
+            writeEnvFile(ensureAppConfig());
         }
     }
 
@@ -515,6 +603,195 @@ final class RuntimeEnv {
         makeExecutable(new File(backendDir, "start-aistudio2api.sh"));
         copyAsset(am, "scripts/vnc-serve.sh", new File(backendDir, "vnc-serve.sh"));
         makeExecutable(new File(backendDir, "vnc-serve.sh"));
+        copyAsset(am, "scripts/kill-browsers.sh", new File(backendDir, "kill-browsers.sh"));
+        makeExecutable(new File(backendDir, "kill-browsers.sh"));
+    }
+
+    /**
+     * The Go backend reads Camoufox's font profile from
+     * {@code /opt/camoufox/fontconfig/<os>/fonts.conf}, but the Camoufox build
+     * in our rootfs ships that directory as {@code fontconfigs} (plural). The
+     * mismatch aborts every browser launch with "读取 Camoufox Windows 字体配置:
+     * ... no such file or directory", which kills account warmup and the
+     * 「浏览器登录」 flow. Alias the two names.
+     */
+    private void ensureCamoufoxFontconfig() {
+        File link = new File(rootfs, "opt/camoufox/fontconfig");
+        File target = new File(rootfs, "opt/camoufox/fontconfigs");
+        if (link.exists() || !target.isDirectory()) {
+            return;
+        }
+        try {
+            Files.createSymbolicLink(link.toPath(), target.toPath().getFileName());
+        } catch (Exception e) {
+            Log.w(TAG, "cannot create fontconfig alias: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Camoufox/Firefox 146+ shows a permanent "The security sandbox is
+     * disabled" notification when MOZ_DISABLE_CONTENT_SANDBOX is set. PRoot
+     * cannot provide the namespaces the sandbox needs, so the variable has to
+     * stay; hide only the browser's notification deck in every login profile.
+     *
+     * <p>The upstream launcher creates a temporary profile and writes user.js
+     * before starting the browser. A tiny wrapper around camoufox-bin injects
+     * the chrome/userChrome.css override and the stylesheet pref at that point,
+     * so the warning disappears without changing the sandbox or the page.
+     */
+    private void ensureCamoufoxSandboxWarningSuppressed() {
+        File bin = new File(rootfs, "opt/camoufox/camoufox-bin");
+        if (!bin.isFile()) {
+            return;
+        }
+        File real = new File(rootfs, "opt/camoufox/camoufox-bin.real");
+        try {
+            String head = "";
+            try (InputStream in = new FileInputStream(bin)) {
+                byte[] buf = new byte[160];
+                int n = in.read(buf);
+                if (n > 0) {
+                    head = new String(buf, 0, n, StandardCharsets.UTF_8);
+                }
+            }
+            if (head.contains("AIStudio2API sandbox-warning wrapper")) {
+                return;
+            }
+            if (!real.isFile()) {
+                Files.copy(bin.toPath(), real.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                real.setExecutable(true, false);
+            }
+            String script = "#!/bin/sh\n"
+                    + "# AIStudio2API sandbox-warning wrapper\n"
+                    + "profile=''\n"
+                    + "prev=''\n"
+                    + "for arg in \"$@\"; do\n"
+                    + "  case \"$arg\" in -profile=*) profile=\"${arg#-profile=}\"; break;; esac\n"
+                    + "  if [ \"$prev\" = \"-profile\" ]; then profile=\"$arg\"; break; fi\n"
+                    + "  prev=\"$arg\"\n"
+                    + "done\n"
+                    + "if [ -n \"$profile\" ] && [ -d \"$profile\" ]; then\n"
+                    + "  mkdir -p \"$profile/chrome\"\n"
+                    + "  cat > \"$profile/chrome/userChrome.css\" <<'CSS'\n"
+                    + "#tab-notification-deck, #notifications-toolbar, .notificationbox-stack { display: none !important; }\n"
+                    + "CSS\n"
+                    + "  printf '%s\\n' 'user_pref(\"toolkit.legacyUserProfileCustomizations.stylesheets\", true);' >> \"$profile/user.js\"\n"
+                    + "fi\n"
+                    + "exec \"$(dirname \"$0\")/camoufox-bin.real\" \"$@\"\n";
+            Files.write(bin.toPath(), script.getBytes(StandardCharsets.UTF_8));
+            bin.setExecutable(true, false);
+        } catch (Exception e) {
+            Log.w(TAG, "cannot install Camoufox warning wrapper", e);
+        }
+    }
+
+    /** Creates the host-shared folder and the rootfs mount point. */
+    private void ensureSharedDir() {
+        sharedDir();
+        File host = new File(rootfs, "mnt/host");
+        if (!host.exists() && !host.mkdirs()) {
+            Log.w(TAG, "cannot create rootfs shared mount point " + host);
+        }
+    }
+
+    /**
+     * Stops Camoufox instances left over from an earlier login attempt.
+     *
+     * The backend gives each account one profile directory. A browser that is
+     * still alive keeps the profile lock, so the next 「浏览器登录」 window exits
+     * immediately and the request fails with 登录未完成. Killing them right
+     * before the login request leaves the page is what makes repeated clicks
+     * work.
+     */
+    void killStaleBrowsers() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(prootCommandFor(
+                    "/bin/bash", BACKEND_DIR + "/kill-browsers.sh"));
+            // proot needs its loader/tmp/lib environment, otherwise it cannot
+            // even start (libtalloc lives in files/runtime/lib).
+            pb.environment().putAll(prootEnv());
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            if (!p.waitFor(5, TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "cannot stop stale Camoufox processes", e);
+        }
+    }
+
+    /**
+     * Rebuilds the rootfs trust store.
+     *
+     * The slim Ubuntu image we ship was built without the ca-certificates
+     * package, so /etc/ssl/certs is empty. Camoufox still browses fine (it has
+     * its own store) but every OpenSSL/Go client inside the rootfs fails with
+     * "x509: certificate signed by unknown authority" — which is exactly what
+     * the Go backend hit when it fetched aistudio.google.com after login.
+     *
+     * The bundle is the Mozilla roots shipped in assets plus whatever the
+     * device itself trusts, so certificates installed on the phone (private
+     * CAs, enterprise proxies) keep working too. Rebuilt on every start, so a
+     * CA added to the phone is picked up without reinstalling the app.
+     */
+    private void deployCaCertificates(AssetManager am) throws IOException {
+        File certsDir = new File(rootfs, "etc/ssl/certs");
+        if (!certsDir.exists() && !certsDir.mkdirs()) {
+            throw new IOException("cannot create " + certsDir);
+        }
+        File bundle = new File(certsDir, "ca-certificates.crt");
+        File staging = new File(certsDir, ".ca-certificates.crt.new");
+        try (OutputStream out = new FileOutputStream(staging)) {
+            try (InputStream in = am.open("ca-certificates.crt")) {
+                copy(in, out);
+            }
+            for (File dir : deviceCaDirs()) {
+                File[] files = dir.listFiles();
+                if (files == null) {
+                    continue;
+                }
+                Arrays.sort(files);
+                for (File f : files) {
+                    if (!f.isFile() || !f.canRead()) {
+                        continue;
+                    }
+                    try (InputStream in = new FileInputStream(f)) {
+                        out.write('\n');
+                        copy(in, out);
+                    } catch (IOException e) {
+                        Log.w(TAG, "skipping CA " + f + ": " + e.getMessage());
+                    }
+                }
+            }
+        }
+        if (!staging.renameTo(bundle)) {
+            Files.deleteIfExists(bundle.toPath());
+            if (!staging.renameTo(bundle)) {
+                throw new IOException("cannot install " + bundle);
+            }
+        }
+    }
+
+    /**
+     * CA directories exposed by Android: 14+ keeps the system store in the
+     * Conscrypt APEX, older releases in /system, user-installed CAs in
+     * /data/misc (readable only on some builds, hence the per-file guard).
+     */
+    private static List<File> deviceCaDirs() {
+        List<File> dirs = new ArrayList<>();
+        dirs.add(new File("/apex/com.android.conscrypt/cacerts"));
+        dirs.add(new File("/system/etc/security/cacerts"));
+        dirs.add(new File("/data/misc/user/0/cacerts-added"));
+        return dirs;
+    }
+
+    private static void copy(InputStream in, OutputStream out) throws IOException {
+        byte[] buf = new byte[64 * 1024];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            out.write(buf, 0, n);
+        }
     }
 
     /**
@@ -540,19 +817,33 @@ final class RuntimeEnv {
     }
 
     /**
-     * Xvfb / x11vnc wrappers injected into /usr/local/bin (first on PATH):
-     *   - Xvfb gets -nolock (Android SELinux forbids Xorg's lock link()).
-     *   - x11vnc gets -noshm (some Android kernels lack SysV shm syscalls).
-     * Also drops in tinywm, the minimal window manager that fills Camoufox's
-     * login window with the desktop (see appgo/src/main/native/tinywm.c).
+     * Deploys the pieces of the virtual desktop that live in the APK rather than
+     * in the rootfs image:
+     *
+     * <ul>
+     *   <li>{@code usr/bin/Xvnc} — TigerVNC's X server with an integrated RFB
+     *       server ({@code Xtigervnc}, shipped as {@code assets/xvnc}). It is
+     *       copied on every start so an app update also updates the display
+     *       stack, and so installs created from an older rootfs (which only had
+     *       Xvfb + x11vnc) gain it without re-extracting 2.3 GB.</li>
+     *   <li>{@code usr/local/bin/tinywm} — the minimal window manager that fills
+     *       Camoufox's login window with the desktop
+     *       (see appgo/src/main/native/tinywm.c).</li>
+     * </ul>
      */
-    private void deployXvfbWrappers(AssetManager am) throws IOException {
-        File xvfb = new File(rootfs, "usr/local/bin/Xvfb");
-        copyAsset(am, "scripts/Xvfb", xvfb);
-        makeExecutable(xvfb);
-        File x11vnc = new File(rootfs, "usr/local/bin/x11vnc");
-        copyAsset(am, "scripts/x11vnc", x11vnc);
-        makeExecutable(x11vnc);
+    private void deployDisplayStack(AssetManager am) throws IOException {
+        File xvnc = new File(rootfs, "usr/bin/Xtigervnc");
+        copyAsset(am, "xvnc/Xtigervnc", xvnc);
+        makeExecutable(xvnc);
+
+        // vnc-serve.sh and anything else looking for the conventional name use
+        // /usr/bin/Xvnc, which the distro package provides as a symlink.
+        File link = new File(rootfs, "usr/bin/Xvnc");
+        if (!Files.isSymbolicLink(link.toPath())) {
+            link.delete();
+            Files.createSymbolicLink(link.toPath(), new File("Xtigervnc").toPath());
+        }
+
         File tinywm = new File(rootfs, "usr/local/bin/tinywm");
         copyAsset(am, "scripts/tinywm", tinywm);
         makeExecutable(tinywm);
@@ -586,7 +877,9 @@ final class RuntimeEnv {
         for (String s : servers) {
             sb.append("nameserver ").append(s).append('\n');
         }
-        sb.append("options timeout:3 attempts:2\n");
+        // Fail over fast: with a VPN up the first resolver can be a carrier
+        // one that is unreachable through the tunnel.
+        sb.append("options timeout:1 attempts:1\n");
 
         File etc = new File(rootfs, "etc");
         if (!etc.exists() && !etc.mkdirs()) {
@@ -605,6 +898,16 @@ final class RuntimeEnv {
         hosts.setReadable(true, false);
     }
 
+    /**
+     * Resolvers for the rootfs, best first.
+     *
+     * <p>With a VPN up, the carrier resolvers of the other (now unused)
+     * networks are unreachable through the tunnel: every lookup stalled on
+     * them for the full timeout before falling back, which is what made the
+     * login browser feel far slower than the phone's own browser. The active
+     * network's resolvers (the tunnel's, when one is up) go first, public
+     * resolvers second, and everything else last.
+     */
     private List<String> collectDnsServers() {
         List<String> out = new ArrayList<>();
         try {
@@ -613,20 +916,11 @@ final class RuntimeEnv {
             if (cm == null) {
                 return out;
             }
+            addDnsServers(cm.getLinkProperties(cm.getActiveNetwork()), out);
+            addDns(out, "1.1.1.1");
+            addDns(out, "8.8.8.8");
             for (android.net.Network net : cm.getAllNetworks()) {
-                android.net.LinkProperties lp = cm.getLinkProperties(net);
-                if (lp == null) {
-                    continue;
-                }
-                for (java.net.InetAddress addr : lp.getDnsServers()) {
-                    if (addr instanceof java.net.Inet6Address) {
-                        continue;
-                    }
-                    String ip = addr.getHostAddress();
-                    if (ip != null && !out.contains(ip)) {
-                        out.add(ip);
-                    }
-                }
+                addDnsServers(cm.getLinkProperties(net), out);
             }
         } catch (Exception e) {
             Log.w(TAG, "collectDnsServers failed", e);
@@ -634,50 +928,114 @@ final class RuntimeEnv {
         return out;
     }
 
+    private static void addDnsServers(android.net.LinkProperties lp, List<String> out) {
+        if (lp == null) {
+            return;
+        }
+        for (java.net.InetAddress addr : lp.getDnsServers()) {
+            if (addr instanceof java.net.Inet6Address) {
+                continue;
+            }
+            addDns(out, addr.getHostAddress());
+        }
+    }
+
+    private static void addDns(List<String> out, String ip) {
+        if (ip != null && !ip.isEmpty() && !out.contains(ip)) {
+            out.add(ip);
+        }
+    }
+
     // ------------------------------------------------------------------
     // .env for the Go backend
     // ------------------------------------------------------------------
 
     /** Writes the .env consumed by the Go backend. */
-    void writeEnvFile(String apiKey, boolean lan) throws IOException {
+    void writeEnvFile(String apiKey) throws IOException {
         if (!backendDir.exists() && !backendDir.mkdirs()) {
             throw new IOException("cannot create backend dir");
         }
-        String host = lan ? "0.0.0.0" : LOOPBACK;
-        // 局域网访问必须同时开启管理端登录：上游控制台默认只接受本机请求，
-        // 其他设备会收到 control_plane_forbidden（"enable console sign-in for
-        // remote access"）。密码由 ensureAppConfig() 生成并持久化，和开启时
-        // 弹窗里展示的、以及「局域网访问」对话框里显示的完全一致。
-        // 关闭局域网时保持免登录，本机 WebView 打开即可用。
-        String admin = adminPassword();
-        if (lan && (admin == null || admin.isEmpty())) {
-            admin = randomToken(16);
-            writeAppConfig(true, apiKey, admin);
-        }
-        boolean adminAuth = lan && admin != null && !admin.isEmpty();
-        StringBuilder sb = new StringBuilder();
-        sb.append("# 由 Android 启动器生成，修改后重启服务生效\n");
-        sb.append("AISTUDIO_AUTH_STATES=auth\n");
-        sb.append("LISTEN_ADDR=").append(host).append(':').append(PORT).append('\n');
-        sb.append("PROXY_API_KEY=").append(apiKey == null ? "" : apiKey).append('\n');
-        sb.append("AUTO_START=false\n");
-        sb.append("LOG_FILE=true\n");
-        sb.append("LOG_MAX_TOTAL_MB=200\n");
-        sb.append("WAA_BACKEND=camoufox\n");
-        sb.append("ADMIN_AUTH_ENABLED=").append(adminAuth ? "true" : "false").append('\n');
-        sb.append("ADMIN_USERNAME=admin\n");
-        sb.append("ADMIN_PASSWORD=").append(adminAuth ? admin : "").append('\n');
-        // The management UI's 「浏览器登录」 button creates an account by driving
-        // a visible Camoufox; that HTTP request stays open until the user
-        // finishes Google sign-in, so the request timeout doubles as the login
-        // timeout and must be generous (the upstream default is 5m).
-        sb.append("REQUEST_TIMEOUT=10m\n");
+        // Merge instead of overwrite: the console's settings page writes the
+        // same .env (config.Config.Save) and those values — listen address,
+        // admin auth, proxy, routing, model mapping, worker limits, log
+        // settings — must survive an app or service restart. The launcher only
+        // owns the keys below.
+        Map<String, String> values = readEnvFile();
+        values.put("AISTUDIO_AUTH_STATES", "auth");
+        // LISTEN_ADDR (host and port) and ADMIN_* belong to the console. Only
+        // provide the first-run default; never overwrite what the user saved.
+        putDefault(values, "LISTEN_ADDR", LOOPBACK + ":" + PORT);
+        values.put("PROXY_API_KEY", apiKey == null ? "" : apiKey);
+        // The rootfs now ships Camoufox 152.0.4-beta.29, the version AIStudio2API
+        // v0.2.13 expects. Keep the browser-backed WAA as the default; `go` is
+        // still available by setting WAA_BACKEND=go for a browserless runtime.
+        // First-run defaults only; a value saved in the console wins.
+        putDefault(values, "WAA_BACKEND", "camoufox");
+        putDefault(values, "AUTO_START", "false");
+        putDefault(values, "LOG_FILE", "true");
+        putDefault(values, "LOG_MAX_TOTAL_MB", "200");
+        // The management UI's 「浏览器登录」 keeps its HTTP request open until
+        // the user finishes Google sign-in, so this is also the login timeout.
+        putDefault(values, "REQUEST_TIMEOUT", "10m");
         // Mobile-friendly defaults: fewer resident Camoufox workers.
-        sb.append("WARM_WORKER_LIMIT=1\n");
-        sb.append("MAX_ACTIVE_WORKERS=2\n");
-        sb.append("WARM_STARTUP_CONCURRENCY=1\n");
-        sb.append("PER_ACCOUNT_CONCURRENCY=1\n");
-        Files.write(envFile().toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+        putDefault(values, "WARM_WORKER_LIMIT", "1");
+        putDefault(values, "MAX_ACTIVE_WORKERS", "2");
+        putDefault(values, "WARM_STARTUP_CONCURRENCY", "1");
+        putDefault(values, "PER_ACCOUNT_CONCURRENCY", "1");
+        // 上游目录暂时没有列出的模型由 EXTRA_MODELS 注入，Playground 与 Build 两个
+        // 通道都会列出；模板取同代 flash 模型，沿用它的 token 上限与工具能力。
+        putDefault(values, "EXTRA_MODELS",
+                "gemini-3.7-flash=gemini-3.8-flash,gemini-3.5-flash=gemini-3.6-flash");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("# 由 Android 启动器维护；管理页保存的设置会保留，重启服务后生效\n");
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            sb.append(entry.getKey()).append('=').append(entry.getValue()).append('\n');
+        }
+        // Write-then-rename so a crash cannot leave a truncated .env behind.
+        File staging = new File(backendDir, ".env.tmp");
+        Files.write(staging.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+        Files.move(staging.toPath(), envFile().toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        envFile().setReadable(true, true);
+        envFile().setWritable(true, true);
+    }
+
+    /** Reads KEY=VALUE pairs so console changes survive a launcher restart. */
+    private Map<String, String> readEnvFile() {
+        Map<String, String> values = new LinkedHashMap<>();
+        try {
+            if (!envFile().exists()) {
+                return values;
+            }
+            for (String raw : Files.readAllLines(envFile().toPath(), StandardCharsets.UTF_8)) {
+                String line = raw.trim();
+                if (line.isEmpty() || line.startsWith("#")) {
+                    continue;
+                }
+                if (line.startsWith("export ")) {
+                    line = line.substring(7).trim();
+                }
+                int eq = line.indexOf('=');
+                if (eq <= 0) {
+                    continue;
+                }
+                String key = line.substring(0, eq).trim();
+                if (!key.isEmpty()) {
+                    values.put(key, line.substring(eq + 1).trim());
+                }
+            }
+        } catch (IOException e) {
+            Log.w(TAG, "cannot read .env: " + e.getMessage());
+        }
+        return values;
+    }
+
+    private static void putDefault(Map<String, String> values, String key, String value) {
+        String current = values.get(key);
+        if (current == null || current.trim().isEmpty()) {
+            values.put(key, value);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -700,7 +1058,7 @@ final class RuntimeEnv {
     /**
      * Command (inside the rootfs) that brings up the virtual desktop the
      * backend's headful Camoufox login window renders on:
-     *   Xvfb :99  ->  x11vnc :5900  ->  websockify/noVNC on 127.0.0.1:6080
+     *   Xvnc :99 (X + RFB)  ->  websockify/noVNC on 127.0.0.1:6080
      */
     static String[] vncServeCommandInsideRootfs() {
         return new String[]{"/bin/bash", BACKEND_DIR + "/vnc-serve.sh"};
@@ -725,10 +1083,31 @@ final class RuntimeEnv {
         cmd.add("/sys");
         cmd.add("-b");
         cmd.add(ctx.getCacheDir().getAbsolutePath() + ":/sdcard-cache");
+        // Persistent, user-visible shared folder. Put files here from Android
+        // (or adb) and access them inside the rootfs / browser at /mnt/host.
+        cmd.add("-b");
+        cmd.add(sharedDir().getAbsolutePath() + ":/mnt/host");
         for (String a : commandInsideRootfs) {
             cmd.add(a);
         }
         return cmd.toArray(new String[0]);
+    }
+
+    /**
+     * External-files "shared" directory, mounted at /mnt/host in the rootfs.
+     * getExternalFilesDir needs no storage permission and survives app updates.
+     */
+    File sharedDir() {
+        File ext = ctx.getExternalFilesDir(null);
+        File dir = new File(ext != null ? ext : ctx.getFilesDir(), "shared");
+        if (!dir.exists() && !dir.mkdirs()) {
+            Log.w(TAG, "cannot create shared dir " + dir);
+        }
+        return dir;
+    }
+
+    String sharedDirPath() {
+        return sharedDir().getAbsolutePath();
     }
 
     List<String> devBinds() {
@@ -746,6 +1125,34 @@ final class RuntimeEnv {
         return binds;
     }
 
+    /** The phone's IANA timezone, used for new accounts and log timestamps. */
+    private static String deviceTimezone() {
+        try {
+            String id = java.util.TimeZone.getDefault().getID();
+            if (id != null && !id.isEmpty() && !"GMT".equals(id)) {
+                return id;
+            }
+        } catch (Exception ignored) {
+        }
+        return "UTC";
+    }
+
+    /** The phone's locale in the form the backend normalises (zh_CN.UTF-8). */
+    private static String deviceLocale() {
+        try {
+            java.util.Locale locale = java.util.Locale.getDefault();
+            String language = locale.getLanguage();
+            if (language != null && !language.isEmpty() && !"und".equals(language)) {
+                String country = locale.getCountry();
+                String tag = country == null || country.isEmpty()
+                        ? language : language + "_" + country;
+                return tag + ".UTF-8";
+            }
+        } catch (Exception ignored) {
+        }
+        return "C.UTF-8";
+    }
+
     Map<String, String> prootEnv() {
         Map<String, String> env = new HashMap<>();
         env.put("LD_LIBRARY_PATH", new File(base, "lib").getAbsolutePath());
@@ -757,19 +1164,33 @@ final class RuntimeEnv {
         env.put("MOZ_DISABLE_CONTENT_SANDBOX", "1");
         env.put("CAMOUFOX_PATH", CAMOUFOX_PATH);
         // The backend opens its headful Camoufox login window on the virtual
-        // display provided by vnc-serve.sh; Xvfb/x11vnc/websockify read the
-        // same values from RuntimeEnv.DISPLAY.
+        // display provided by vnc-serve.sh; Xvnc/websockify read the same values
+        // from RuntimeEnv.DISPLAY.
         // The WAA workers are launched with -headless, so they ignore DISPLAY.
         env.put("DISPLAY", DISPLAY);
-        // Xvfb's geometry: by default exactly the login view's pixel area, so
+        // Xvnc's geometry: by default exactly the login view's pixel area, so
         // the browser fills the screen 1:1 (see virtualScreenSize), or the
         // geometry picked in the 「显示分辨率」 menu.
         int[] screen = displaySize(ctx);
         env.put("VNC_SCREEN", screen[0] + "x" + screen[1]);
         env.put("HOME", "/root");
         env.put("TMPDIR", "/tmp");
-        env.put("TZ", "UTC");
-        env.put("LANG", "C.UTF-8");
+        // Follow the phone, like the upstream build follows the desktop: the
+        // backend derives a new account's locale/timezone from these values.
+        env.put("TZ", deviceTimezone());
+        env.put("LANG", deviceLocale());
+        // LANG tells the backend which locale a new account should use, but the
+        // rootfs only ships C.UTF-8; LC_ALL keeps libc (and bash) from warning
+        // about a missing locale on every command while Go still reads LANG.
+        env.put("LC_ALL", "C.UTF-8");
+        // The virtual display is a software X server; tell Mesa/GLX to match
+        // (upstream sets the same pair for the X server it starts itself).
+        env.put("LIBGL_ALWAYS_SOFTWARE", "1");
+        env.put("__GLX_VENDOR_LIBRARY_NAME", "mesa");
+        // The rootfs ships no trust store of its own; ensureReady() rebuilds this
+        // bundle, and Go/OpenSSL read it from here.
+        env.put("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt");
+        env.put("SSL_CERT_DIR", "/etc/ssl/certs");
         env.put("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
         return env;
     }

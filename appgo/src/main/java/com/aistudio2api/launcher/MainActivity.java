@@ -1,12 +1,17 @@
 package com.aistudio2api.launcher;
 
 import android.annotation.SuppressLint;
+import android.app.Dialog;
 import android.app.DownloadManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -15,10 +20,18 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
 import android.util.Base64;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
 import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
@@ -31,33 +44,32 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
-import androidx.webkit.WebViewCompat;
-import androidx.webkit.WebViewFeature;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import org.json.JSONObject;
+
 /**
- * 主界面：用内置 WebView 打开 Go 后端的桌面版管理控制台（127.0.0.1:2048）。
+ * 主界面：用内置 WebView 打开 Go 后端的管理控制台（127.0.0.1:2048）。
  *
- * 「以电脑浏览器启动」等价于 Chrome 的「桌面版网站」：
- *   1. 使用桌面 Chrome 的 User-Agent；
- *   2. 开启 useWideViewPort / loadWithOverviewMode，让按桌面宽度设计的控制台
- *      自适应屏幕宽度；
- *   3. 保留捏合缩放，放大后可直接查看细节。
- * 以上均为默认行为，不再提供任何 UA / 缩放开关。
+ * 按手机浏览器的方式打开：
+ *   1. 使用 WebView 自带的移动端 User-Agent；
+ *   2. 不覆盖 viewport，控制台自己的 {@code width=device-width} 生效，
+ *      渲染成适合手机宽度的窄布局；
+ *   3. 仍保留捏合缩放，放大后可直接查看细节。
  *
  * 登录不再是一个独立的菜单功能：后端管理界面里的「浏览器登录」会驱动一个
  * *可见* 的 Camoufox（POST /api/accounts）。这里用注入的 JS 钩住该请求，
@@ -68,15 +80,14 @@ public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "AIStudio2API";
 
-    private static final String BASE_URL = "http://127.0.0.1:" + RuntimeEnv.PORT + "/";
     private static final String VNC_URL =
             "http://127.0.0.1:" + RuntimeEnv.NOVNC_PORT + "/login.html";
     private static final int REQ_FILE_CHOOSER = 42101;
 
-    /** Desktop Chrome UA so the console renders in its wide desktop layout. */
-    private static final String DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+    /** Console URL; the port comes from .env because the console can change it. */
+    private String baseUrl() {
+        return "http://127.0.0.1:" + new RuntimeEnv(this).listenPort() + "/";
+    }
 
     private WebView webView;
     private View loading;
@@ -85,6 +96,24 @@ public class MainActivity extends AppCompatActivity {
     private androidx.appcompat.widget.Toolbar loginToolbar;
     private WebView vncWebView;
     private PinchZoomLayout vncZoom;
+    private MouseJoystickView mouseJoystick;
+    private View mouseLeft;
+    private View mouseRight;
+    /** The 「键盘」 input bar (own window, so the IME always comes up). */
+    private Dialog imeBar;
+    private EditText imeBarInput;
+    /** Last text sent through the bar, so it can be reopened and edited. */
+    private String lastImeText = "";
+    /** Set by 「重连」: put the remote browser back on the sign-in page. */
+    private boolean navigateToLoginOnConnect;
+
+    /**
+     * Where the remote browser is sent on 「重连」. Go through AI Studio rather
+     * than a hand-built {@code accounts.google.com/v3/signin/identifier} URL:
+     * Google's sign-in entry needs parameters the backend generates, and the
+     * bare URL returns 400. AI Studio redirects to a valid sign-in page.
+     */
+    private static final String LOGIN_START_URL = "https://aistudio.google.com/";
 
     private ValueCallback<Uri[]> pendingFileCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -96,12 +125,13 @@ public class MainActivity extends AppCompatActivity {
     private volatile boolean loginOverlayVisible;
     /** True between "browser login" start and its HTTP response. */
     private volatile boolean loginPending;
+    /** Id of the newest login attempt; older responses must not close its window. */
+    private volatile int loginToken;
     /** Guards against a stale "wait for websockify" probe loading the view. */
     private int vncLoadToken;
     /** Last remote desktop size reported by the page (see {@link VncBridge}). */
     private int vncRemoteW, vncRemoteH;
     /** Last geometry reported by the login page (see VncBridge#onMetrics). */
-    private String vncMetrics;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -120,7 +150,11 @@ public class MainActivity extends AppCompatActivity {
         loginToolbar = findViewById(R.id.loginToolbar);
         vncWebView = findViewById(R.id.vncWebView);
         vncZoom = findViewById(R.id.vncZoom);
+        mouseJoystick = findViewById(R.id.mouseJoystick);
+        mouseLeft = findViewById(R.id.mouseLeft);
+        mouseRight = findViewById(R.id.mouseRight);
         configureLoginToolbar();
+        configureMouseControls();
 
         // Keep the login view at the remote desktop's aspect ratio so noVNC's
         // zoom-to-fit fills it exactly. With the default geometry that ratio is
@@ -152,9 +186,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Desktop-site style WebView: desktop UA, wide viewport fitted to the screen
-     * and pinch zoom kept, so the wide console behaves like Chrome's
-     * "Request desktop site" mode.
+     * Mobile-browser style WebView: the default mobile user agent, the page's
+     * own viewport (width=device-width), and pinch zoom kept.
      */
     @SuppressLint("SetJavaScriptEnabled")
     private void configureWebView() {
@@ -166,10 +199,9 @@ public class MainActivity extends AppCompatActivity {
         ws.setMediaPlaybackRequiresUserGesture(false);
         ws.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
-        // --- desktop emulation (always on: this is what "以电脑浏览器启动" means) ---
-        ws.setUserAgentString(DESKTOP_UA);
-        ws.setUseWideViewPort(true);
-        ws.setLoadWithOverviewMode(true);
+        // --- mobile browser (always on: this is how the console is opened) ---
+        ws.setUseWideViewPort(false);
+        ws.setLoadWithOverviewMode(false);
         ws.setSupportZoom(true);
         ws.setBuiltInZoomControls(true);
         ws.setDisplayZoomControls(false);
@@ -177,8 +209,6 @@ public class MainActivity extends AppCompatActivity {
 
         webView.setInitialScale(0);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-
-        applyDesktopViewport();
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -226,7 +256,6 @@ public class MainActivity extends AppCompatActivity {
                 loading.setVisibility(View.GONE);
                 injectBlobHook(view);
                 injectLoginHook(view);
-                injectDesktopViewport(view);
             }
 
             @Override
@@ -270,23 +299,19 @@ public class MainActivity extends AppCompatActivity {
         loginToolbar.inflateMenu(R.menu.login_menu);
         loginToolbar.setOnMenuItemClickListener(item -> {
             int id = item.getItemId();
+            if (id == R.id.login_keyboard) {
+                showImeBar();
+                return true;
+            }
             if (id == R.id.login_fit) {
                 vncZoom.reset();
                 return true;
             }
-            if (id == R.id.login_keyboard) {
-                showLoginKeyboard();
-                return true;
-            }
-            if (id == R.id.login_type) {
-                askLoginText();
-                return true;
-            }
-            if (id == R.id.login_info) {
-                showLoginInfo();
-                return true;
-            }
             if (id == R.id.login_reconnect) {
+                // A reconnect must start over at the sign-in page: the remote
+                // browser is a long-lived window and would otherwise come back
+                // on whatever page the last attempt left open.
+                navigateToLoginOnConnect = true;
                 reloadVncPage();
                 return true;
             }
@@ -298,92 +323,52 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    /**
+     * Wires the on-screen mouse helpers. They are separate views above the
+     * noVNC WebView, so only their own bounds consume touches; the rest of the
+     * page still gets normal taps, drags and pinches.
+     */
+    private void configureMouseControls() {
+        mouseJoystick.setListener((dx, dy) -> {
+            if (loginOverlayVisible && vncWebView != null) {
+                vncWebView.evaluateJavascript(
+                        "window.__a2apiMove&&window.__a2apiMove(" + dx + "," + dy + ")", null);
+            }
+        });
+        bindMouseButton(mouseLeft, 1);
+        bindMouseButton(mouseRight, 2);
+    }
+
+    private void bindMouseButton(View button, int rfbButton) {
+        button.setOnTouchListener((view, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    view.setPressed(true);
+                    sendMouseButton(rfbButton, true);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    view.setPressed(false);
+                    sendMouseButton(rfbButton, false);
+                    return true;
+                default:
+                    return false;
+            }
+        });
+    }
+
+    private void sendMouseButton(int rfbButton, boolean down) {
+        if (!loginOverlayVisible || vncWebView == null) {
+            return;
+        }
+        vncWebView.evaluateJavascript(
+                "window.__a2apiButton&&window.__a2apiButton(" + rfbButton + "," + down + ")",
+                null);
+    }
+
     /** Usability of the login window before/while the browser is on screen. */
     private void setLoginStatus(int resId) {
         loginToolbar.setSubtitle(resId == 0 ? null : getString(resId));
-    }
-
-    /**
-     * Brings up the soft keyboard for the login window. The remote desktop is a
-     * canvas, so the page focuses an invisible textarea; tapping the desktop
-     * does this automatically, this menu item is the explicit way.
-     */
-    private void showLoginKeyboard() {
-        if (!loginOverlayVisible) {
-            return;
-        }
-        vncWebView.evaluateJavascript(
-                "window.__a2api && window.__a2api.keyboard()", null);
-    }
-
-    /** Sends raw text to the remote browser (newline = Return). */
-    private void askLoginText() {
-        if (!loginOverlayVisible || vncWebView.getUrl() == null) {
-            toast(getString(R.string.login_type_unavailable));
-            return;
-        }
-        final EditText input = new EditText(this);
-        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        input.setHint(R.string.login_type_hint);
-        input.setMinLines(2);
-        FrameLayout box = new FrameLayout(this);
-        int pad = Math.round(20 * getResources().getDisplayMetrics().density);
-        box.setPadding(pad, pad / 2, pad, 0);
-        box.addView(input);
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.login_type_title)
-                .setMessage(R.string.login_type_message)
-                .setView(box)
-                .setPositiveButton(R.string.login_type_send, (d, w) -> {
-                    String text = input.getText().toString();
-                    if (text.isEmpty()) {
-                        return;
-                    }
-                    sendLoginText(text);
-                })
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
-    }
-
-    private void sendLoginText(String text) {
-        // JSON-quote so quotes/newlines/backslashes survive the JS round-trip.
-        String quoted = org.json.JSONObject.quote(text);
-        vncWebView.evaluateJavascript(
-                "window.__a2api && window.__a2api.typeText(" + quoted + ")", null);
-        toast(getString(R.string.login_type_sent, text.length()));
-    }
-
-    /**
-     * 「适配信息」: the numbers that tell a page-fit problem from a remote-window
-     * problem. When the canvas matches the view, the page really is showing the
-     * whole framebuffer — if the picture is still cut at the right edge, the
-     * browser window itself is drawn outside the X screen (tinywm's job, see
-     * appgo/src/main/native/tinywm.c) and no amount of page scaling can bring
-     * those pixels back, because x11vnc never captured them.
-     */
-    private void showLoginInfo() {
-        String json = vncMetrics;
-        if (!loginOverlayVisible || json == null) {
-            toast(getString(R.string.login_info_none));
-            return;
-        }
-        String body;
-        try {
-            org.json.JSONObject o = new org.json.JSONObject(json);
-            body = getString(R.string.login_info_body,
-                    o.optString("fb", "-"),
-                    o.optString("view", "-"),
-                    o.optString("canvas", "-"),
-                    o.optString("scale", "-"),
-                    o.optString("overflow", "-"));
-        } catch (Exception e) {
-            body = json;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.login_info_title)
-                .setMessage(body + "\n\n" + getString(R.string.login_info_hint))
-                .setPositiveButton(android.R.string.ok, null)
-                .show();
     }
 
     /**
@@ -396,6 +381,123 @@ public class MainActivity extends AppCompatActivity {
         }
         setLoginStatus(R.string.login_overlay_connecting);
         vncWebView.loadUrl(VNC_URL);
+    }
+
+    /**
+     * The 「键盘」 menu item: a one-line input bar pinned to the bottom of the
+     * login window, with the phone's own IME above it.
+     *
+     * <p>Why a native {@link EditText} in its own window instead of the page's
+     * hidden textarea: a canvas is not editable, so a WebView only raises the
+     * IME for an editable element it owns <em>and</em> while it holds window
+     * focus — a hand-off that proved unreliable here. A real EditText always
+     * brings the keyboard up. What is typed is handed to the noVNC page, which
+     * replays it as key events in the remote window and ends with Return, i.e.
+     * it fills the focused remote field and submits it.
+     */
+    private void showImeBar() {
+        if (!loginOverlayVisible) {
+            return;
+        }
+        if (imeBar != null && imeBar.isShowing()) {
+            imeBarInput.requestFocus();
+            return;
+        }
+
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(12), dp(6), dp(4), dp(6));
+        bar.setBackgroundColor(0xF20D1117);
+
+        imeBarInput = new EditText(this);
+        imeBarInput.setSingleLine(true);
+        imeBarInput.setHint(R.string.login_ime_hint);
+        imeBarInput.setHintTextColor(0x80FFFFFF);
+        imeBarInput.setTextColor(Color.WHITE);
+        imeBarInput.setTextSize(16);
+        imeBarInput.setBackground(null);
+        imeBarInput.setInputType(InputType.TYPE_CLASS_TEXT);
+        // Start from the text the page read out of the field the user tapped
+        // (see VncBridge#onFieldText), so the bar edits that field's content
+        // and never carries the previous field's text into a new one.
+        imeBarInput.setText(lastImeText);
+        imeBarInput.setSelection(imeBarInput.getText().length());
+        // No fullscreen "extract" editor: in landscape some IMEs would otherwise
+        // cover the whole screen with their own text view and hide this bar.
+        imeBarInput.setImeOptions(EditorInfo.IME_ACTION_SEND
+                | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        imeBarInput.setOnEditorActionListener((v, actionId, event) -> {
+            boolean enter = event != null
+                    && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                    && event.getAction() == KeyEvent.ACTION_DOWN;
+            if (enter || actionId == EditorInfo.IME_ACTION_SEND
+                    || actionId == EditorInfo.IME_ACTION_DONE) {
+                sendImeBarText();
+                return true;
+            }
+            return false;
+        });
+        bar.addView(imeBarInput, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView send = new TextView(this);
+        send.setText(R.string.login_ime_send);
+        send.setTextColor(0xFF7CC4FF);
+        send.setTextSize(16);
+        send.setPadding(dp(16), dp(10), dp(16), dp(10));
+        send.setOnClickListener(v -> sendImeBarText());
+        bar.addView(send);
+
+        imeBar = new Dialog(this);
+        imeBar.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        imeBar.setContentView(bar);
+        imeBar.setCanceledOnTouchOutside(true);
+        imeBar.setOnDismissListener(d -> {
+            imeBar = null;
+            imeBarInput = null;
+            // The dialog window took focus; hand it back so the desktop keeps
+            // receiving touches (and so a later tap can type again).
+            if (loginOverlayVisible) {
+                vncWebView.requestFocus();
+            }
+        });
+        Window win = imeBar.getWindow();
+        if (win != null) {
+            win.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+                    | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            WindowManager.LayoutParams lp = win.getAttributes();
+            lp.width = WindowManager.LayoutParams.MATCH_PARENT;
+            lp.height = WindowManager.LayoutParams.WRAP_CONTENT;
+            lp.gravity = Gravity.BOTTOM;
+            win.setAttributes(lp);
+        }
+        imeBar.show();
+        imeBarInput.requestFocus();
+    }
+
+    /** Forwards the bar's text to the page, which types it and presses Return. */
+    private void sendImeBarText() {
+        if (imeBarInput == null || vncWebView == null) {
+            return;
+        }
+        String text = imeBarInput.getText().toString();
+        // A non-empty previous text means the remote field already holds it:
+        // select-all first so this send replaces instead of appending.
+        boolean replace = !lastImeText.isEmpty();
+        lastImeText = text;
+        vncWebView.evaluateJavascript(
+                "window.__a2apiSend && window.__a2apiSend("
+                        + JSONObject.quote(text) + ", " + replace + ")",
+                null);
+        if (imeBar != null && imeBar.isShowing()) {
+            imeBar.dismiss();
+        }
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     /** Opens non-loopback links in the system browser; keeps loopback in-app. */
@@ -425,15 +527,27 @@ public class MainActivity extends AppCompatActivity {
 
     private final class LoginBridge {
         @JavascriptInterface
-        public void onStarted(String url) {
-            Log.i(TAG, "browser login started: " + url);
+        public void onStarted(String url, int token) {
+            Log.i(TAG, "browser login started: " + url + " token=" + token);
+            // A Camoufox left over from an earlier attempt still holds the
+            // account's profile lock, so the backend's new login window would
+            // exit at once and the console would report 登录未完成. This call
+            // runs before the login request leaves the page, i.e. before the
+            // backend starts the new browser.
+            new RuntimeEnv(MainActivity.this).killStaleBrowsers();
+            loginToken = token;
             loginPending = true;
             handler.post(MainActivity.this::showLoginOverlay);
         }
 
         @JavascriptInterface
-        public void onFinished(boolean ok, String detail) {
-            Log.i(TAG, "browser login finished ok=" + ok + " detail=" + detail);
+        public void onFinished(boolean ok, String detail, int token) {
+            Log.i(TAG, "browser login finished ok=" + ok + " detail=" + detail
+                    + " token=" + token);
+            if (token != loginToken) {
+                // Superseded by a newer click; that attempt owns the window now.
+                return;
+            }
             loginPending = false;
             handler.post(() -> {
                 hideLoginOverlay(true);
@@ -457,6 +571,17 @@ public class MainActivity extends AppCompatActivity {
                 }
                 if ("connected".equals(state)) {
                     setLoginStatus(R.string.login_overlay_ready);
+                    // A pinch from a previous attempt (or the transition while
+                    // rotating) must not survive into a fresh login: fit the
+                    // whole desktop first, the user can zoom afterwards.
+                    vncZoom.reset();
+                    if (navigateToLoginOnConnect) {
+                        navigateToLoginOnConnect = false;
+                        // The remote browser is a long-lived window: send it to
+                        // the sign-in entry instead of leaving the old page up.
+                        vncWebView.evaluateJavascript("window.__a2apiNav && window.__a2apiNav("
+                                + JSONObject.quote(LOGIN_START_URL) + ")", null);
+                    }
                 } else if ("ready".equals(state)) {
                     // Blank desktop replaced by the browser: nothing left to say.
                     setLoginStatus(0);
@@ -488,6 +613,25 @@ public class MainActivity extends AppCompatActivity {
         }
 
         /**
+         * Text of the remote field the user just tapped (empty when it has
+         * none). The 「键盘」 bar opens with it, so each field is edited with
+         * its own content instead of the previously typed one.
+         */
+        @JavascriptInterface
+        public void onFieldText(String text) {
+            final String value = text == null ? "" : text;
+            handler.post(() -> {
+                lastImeText = value;
+                // The clipboard echo is async: the bar may already be open.
+                if (imeBarInput != null && imeBarInput.getText().length() == 0
+                        && !value.isEmpty()) {
+                    imeBarInput.setText(value);
+                    imeBarInput.setSelection(value.length());
+                }
+            });
+        }
+
+        /**
          * Geometry measured inside the page: framebuffer, view, canvas, fit
          * scale and whether the canvas overflows the view. Logged and shown by
          * 「适配信息」; the numbers distinguish "the page does not fit the
@@ -495,8 +639,9 @@ public class MainActivity extends AppCompatActivity {
          */
         @JavascriptInterface
         public void onMetrics(String json) {
+            // Kept for logcat: the numbers tell a page-fit problem from a
+            // remote-window problem when a screenshot is not enough.
             Log.i(TAG, "novnc metrics " + json);
-            handler.post(() -> vncMetrics = json);
         }
     }
 
@@ -507,8 +652,110 @@ public class MainActivity extends AppCompatActivity {
         vncZoom.setRemoteSize(width, height);
     }
 
+    /**
+     * Pins the noVNC view to the height the login window really has on screen.
+     *
+     * <p>Why: the overlay's weight-based height is only as good as the window's
+     * own measurement, and that is briefly wrong while the activity rotates or
+     * while the soft keyboard resizes the window (adjustResize). A view taller
+     * than the visible area puts the bottom of the remote desktop off-screen —
+     * exactly the "login window is still clipped" symptom.
+     *
+     * <p>The cap comes from the real display metrics (the same source the
+     * virtual desktop geometry uses), the floor from the overlay's own height
+     * so a smaller window (keyboard up) still wins.
+     */
+    private void pinLoginViewHeight() {
+        if (vncZoom == null) {
+            return;
+        }
+        int bar = RuntimeEnv.loginBarHeight(this);
+        DisplayMetrics dm = new DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+        int screenH = Math.max(1, dm.heightPixels);
+        // Never let a mis-measured overlay (it can be taller than the display
+        // for a frame during the rotation) push the view past the screen.
+        int overlayH = loginOverlay != null && loginOverlay.getHeight() > 0
+                ? Math.min(loginOverlay.getHeight(), screenH)
+                : screenH;
+        int h = Math.max(1, overlayH - bar);
+        ViewGroup.LayoutParams lp = vncZoom.getLayoutParams();
+        if (lp == null) {
+            return;
+        }
+        boolean changed = false;
+        if (lp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            changed = true;
+        }
+        if (lp.height != h) {
+            lp.height = h;
+            changed = true;
+        }
+        if (!changed) {
+            return;
+        }
+        // Drop the weight: with a fixed height the parent's leftover space (or
+        // its deficit, when the overlay was measured taller than the display)
+        // would otherwise be redistributed on top of the height we just pinned.
+        if (lp instanceof LinearLayout.LayoutParams) {
+            ((LinearLayout.LayoutParams) lp).weight = 0f;
+        }
+        vncZoom.setLayoutParams(lp);
+        vncZoom.requestLayout();
+    }
+
+    /**
+     * Re-measures the login view after the landscape switch settles.
+     *
+     * <p>{@link #pinLoginViewHeight()} can run while the display metrics are
+     * still portrait (the rotation is asynchronous), which leaves the zoom
+     * container at portrait width and makes noVNC scale the 1440x900 desktop
+     * down to a small centred rectangle. Re-run it once the new metrics are in
+     * and reset the fit; this is what turns the first login from "a small
+     * browser in the middle" into the full-screen browser.
+     */
+    private void relayoutLoginView() {
+        if (!loginOverlayVisible || loginOverlay == null || vncZoom == null) {
+            return;
+        }
+        ViewGroup.LayoutParams olp = loginOverlay.getLayoutParams();
+        if (olp != null) {
+            olp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            olp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+            loginOverlay.setLayoutParams(olp);
+        }
+        pinLoginViewHeight();
+        DisplayMetrics dm = new DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+        Log.i(TAG, "login view " + vncZoom.getWidth() + "x" + vncZoom.getHeight()
+                + ", screen " + dm.widthPixels + "x" + dm.heightPixels);
+        vncZoom.reset();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (loginOverlayVisible) {
+            loginOverlay.post(this::pinLoginViewHeight);
+            loginOverlay.postDelayed(this::relayoutLoginView, 350);
+        }
+    }
+
     private void showLoginOverlay() {
         if (loginOverlayVisible) {
+            return;
+        }
+        // Do not measure/load noVNC while the window is still portrait: the
+        // overlay would be 1080 wide and noVNC would fit the desktop into that
+        // narrow slice. Wait for the landscape rotation to land first.
+        int rotation = getWindowManager().getDefaultDisplay().getRotation();
+        if (rotation != android.view.Surface.ROTATION_90
+                && rotation != android.view.Surface.ROTATION_270) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+            if (loginPending) {
+                handler.postDelayed(this::showLoginOverlay, 250);
+            }
             return;
         }
         loginOverlayVisible = true;
@@ -518,6 +765,11 @@ public class MainActivity extends AppCompatActivity {
         // so this switch does not recreate the activity: the WebViews survive
         // the rotation and the noVNC page refits itself when its view resizes.
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+        // A fresh login window starts with no field text to carry over.
+        lastImeText = "";
+        mouseJoystick.cancel();
+        mouseLeft.setPressed(false);
+        mouseRight.setPressed(false);
         vncZoom.reset();
         // Re-sync the view's aspect with the desktop that is actually running
         // (a display-geometry change takes effect on the next backend start;
@@ -530,6 +782,19 @@ public class MainActivity extends AppCompatActivity {
         }
         setLoginStatus(R.string.login_overlay_connecting);
         loginOverlay.setVisibility(View.VISIBLE);
+        // After the rotation this view gets a real size; pin it to the display
+        // so a stale window measurement can never make it taller than the screen.
+        loginOverlay.post(this::pinLoginViewHeight);
+        // The rotation is asynchronous: the metrics above may still be portrait.
+        // Re-run once it has settled, otherwise the 1440x900 desktop is fitted
+        // to the portrait width and the browser looks tiny.
+        loginOverlay.postDelayed(this::relayoutLoginView, 350);
+        loginOverlay.postDelayed(this::relayoutLoginView, 900);
+        // The console WebView keeps window focus while the overlay is up, and a
+        // WebView that is not focused never raises the soft keyboard: the page's
+        // hidden textarea becomes activeElement but the IME stays down. Hand
+        // focus to the login view so tapping a text field can type.
+        vncWebView.requestFocus();
         vncWebView.onResume();
 
         final int token = ++vncLoadToken;
@@ -552,19 +817,30 @@ public class MainActivity extends AppCompatActivity {
         if (loginOverlayVisible) {
             loginOverlayVisible = false;
             vncLoadToken++;
+            if (imeBar != null) {
+                imeBar.dismiss();
+            }
             loginOverlay.setVisibility(View.GONE);
+            mouseJoystick.cancel();
+            try {
+                vncWebView.evaluateJavascript(
+                        "window.__a2apiRelease&&window.__a2apiRelease()", null);
+            } catch (Exception ignored) {
+            }
             try {
                 vncWebView.loadUrl("about:blank");
             } catch (Exception ignored) {
             }
             vncWebView.onPause();
+            // Give focus back so the console's own inputs (and the IME) work.
+            webView.requestFocus();
             // Back to the console's own (sensor-driven) orientation.
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         }
         // Keep this outside the visibility guard: a login dismissed with
         // 「返回界面」 still finishes later and must refresh the console.
         if (reloadConsole) {
-            webView.reload();
+            webView.loadUrl(baseUrl());
         }
     }
 
@@ -604,7 +880,7 @@ public class MainActivity extends AppCompatActivity {
         int id = item.getItemId();
         if (id == R.id.action_reload) {
             loginPending = false;
-            webView.reload();
+            webView.loadUrl(baseUrl());
             return true;
         } else if (id == R.id.action_update) {
             new UpdateChecker(this).check();
@@ -616,193 +892,60 @@ public class MainActivity extends AppCompatActivity {
             startService(ServerService.ACTION_STOP);
             toast("已停止本地服务");
             return true;
-        } else if (id == R.id.action_lan) {
-            showLanDialog();
-            return true;
-        } else if (id == R.id.action_display) {
-            showDisplayDialog();
+        } else if (id == R.id.action_shared) {
+            showSharedDirDialog();
             return true;
         } else if (id == R.id.action_battery) {
             showBatteryDialog();
             return true;
         } else if (id == R.id.action_about) {
-            new AlertDialog.Builder(this)
-                    .setTitle(R.string.menu_about)
-                    .setMessage(R.string.about_message)
-                    .setPositiveButton(android.R.string.ok, null)
-                    .show();
+            showSelectableDialog(R.string.menu_about, getString(R.string.about_message),
+                    android.R.string.ok, null, 0);
             return true;
         }
         return super.onOptionsItemSelected(item);
     }
 
     /**
-     * Termux:X11-style display resolution for the virtual desktop. The choice is
-     * Xvfb's {@code -screen} geometry, so applying it restarts the backend (and
-     * with it the X display, the VNC bridge and the noVNC view's aspect ratio).
+     * Message dialog whose body can be long-pressed and copied, so values shown
+     * here (API address, logs) can be moved elsewhere.
      */
-    private void showDisplayDialog() {
-        final int[] custom = RuntimeEnv.customDisplaySize(this);
-        // Landscape by construction: the login window itself is shown in
-        // landscape, so "follow the phone" means the phone's landscape area.
-        final int[] nativeSize = RuntimeEnv.virtualScreenSize(this);
-        final int[][] sizes = {
-                nativeSize,           // follow the phone (landscape, fills the view)
-                {1280, 720},
-                {1920, 1080},
-                {1280, 1024},
-                {1440, 900},
-                {1280, 800},
-                {-1, -1},             // custom…
-        };
-        final String[] labels = {
-                getString(R.string.display_native, nativeSize[0], nativeSize[1]),
-                "1280 × 720",
-                "1920 × 1080",
-                "1280 × 1024",
-                "1440 × 900",
-                "1280 × 800",
-                getString(R.string.display_custom),
-        };
-        // Tick whichever preset matches the geometry that is in force now — the
-        // stored choice, or the default when the user has never picked one.
-        int[] effective = RuntimeEnv.displaySize(this);
-        int checked = sizes.length - 1;
-        for (int i = 0; i < sizes.length; i++) {
-            if (sizes[i][0] == effective[0] && sizes[i][1] == effective[1]) {
-                checked = i;
-                break;
-            }
+    private AlertDialog showSelectableDialog(int title, CharSequence message, int positive,
+                                             DialogInterface.OnClickListener onPositive,
+                                             int negative) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton(positive, onPositive);
+        if (negative != 0) {
+            builder.setNegativeButton(negative, null);
         }
+        AlertDialog dialog = builder.show();
+        TextView body = dialog.findViewById(android.R.id.message);
+        if (body != null) {
+            body.setTextIsSelectable(true);
+        }
+        return dialog;
+    }
+
+    private void showSharedDirDialog() {
+        String path = new RuntimeEnv(this).sharedDirPath();
+        String message = "手机/电脑路径：\n" + path
+                + "\n\n容器内路径：\n/mnt/host"
+                + "\n\n把文件放进手机路径后，浏览器登录窗口、容器内终端和 Web 控制台"
+                + "都可以通过 /mnt/host 访问。该目录使用 App 的外部文件目录，不需要存储权限；"
+                + "可通过 USB/ADB，或支持 Android/data 的文件管理器打开。";
         new AlertDialog.Builder(this)
-                .setTitle(R.string.display_title)
-                .setMessage(R.string.display_message)
-                .setSingleChoiceItems(labels, checked, (d, which) -> {
-                    d.dismiss();
-                    if (sizes[which][0] < 0) {
-                        askCustomDisplaySize(custom);
-                    } else {
-                        applyDisplaySize(sizes[which][0], sizes[which][1]);
-                    }
+                .setTitle(R.string.menu_shared)
+                .setMessage(message)
+                .setPositiveButton("复制手机路径", (d, w) -> {
+                    android.content.ClipboardManager cm =
+                            (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("shared", path));
+                    toast("路径已复制");
                 })
-                .setNegativeButton(android.R.string.cancel, null)
+                .setNegativeButton(android.R.string.ok, null)
                 .show();
-    }
-
-    private void askCustomDisplaySize(int[] current) {
-        final EditText input = new EditText(this);
-        input.setInputType(InputType.TYPE_CLASS_TEXT);
-        input.setHint(R.string.display_custom_hint);
-        if (current != null) {
-            input.setText(current[0] + "x" + current[1]);
-            input.setSelection(input.getText().length());
-        }
-        FrameLayout box = new FrameLayout(this);
-        int pad = Math.round(20 * getResources().getDisplayMetrics().density);
-        box.setPadding(pad, pad / 2, pad, 0);
-        box.addView(input);
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.display_custom_title)
-                .setView(box)
-                .setPositiveButton(android.R.string.ok, (d, w) -> {
-                    int[] size = parseDisplaySize(input.getText().toString());
-                    if (size == null) {
-                        toast(getString(R.string.display_invalid,
-                                RuntimeEnv.MIN_DISPLAY, RuntimeEnv.MAX_DISPLAY));
-                    } else {
-                        applyDisplaySize(size[0], size[1]);
-                    }
-                })
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
-    }
-
-    /** "1600x1000", "1600×1000" or "1600 1000" -> {1600, 1000}; null if invalid. */
-    private static int[] parseDisplaySize(String text) {
-        if (text == null) {
-            return null;
-        }
-        String[] parts = text.trim().toLowerCase().split("[x×*,\\s]+");
-        if (parts.length < 2) {
-            return null;
-        }
-        try {
-            int w = Integer.parseInt(parts[0]);
-            int h = Integer.parseInt(parts[1]);
-            if (w < RuntimeEnv.MIN_DISPLAY || w > RuntimeEnv.MAX_DISPLAY
-                    || h < RuntimeEnv.MIN_DISPLAY || h > RuntimeEnv.MAX_DISPLAY) {
-                return null;
-            }
-            return new int[]{w, h};
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
-    /** w/h <= 0 means "follow the phone's own screen". */
-    private void applyDisplaySize(int w, int h) {
-        if (w <= 0 || h <= 0) {
-            RuntimeEnv.setCustomDisplaySize(this, null, null);
-            toast(getString(R.string.display_applied_native));
-        } else {
-            RuntimeEnv.setCustomDisplaySize(this, w, h);
-            toast(getString(R.string.display_applied, w, h));
-        }
-        int[] size = RuntimeEnv.displaySize(this);
-        setRemoteSize(size[0], size[1]);
-        restartBackendAndReload();
-    }
-
-    private void showLanDialog() {
-        final RuntimeEnv env = new RuntimeEnv(this);
-        io.execute(() -> {
-            final boolean enabled = env.isLanEnabled();
-            String msg = getString(R.string.lan_message);
-            if (enabled) {
-                String pw = env.adminPassword();
-                if (pw != null && !pw.isEmpty()) {
-                    msg = msg + "\n\n" + getString(R.string.lan_admin_password, pw);
-                }
-            }
-            final String message = msg;
-            handler.post(() -> new AlertDialog.Builder(this)
-                    .setTitle(R.string.lan_title)
-                    .setMessage(message)
-                    .setPositiveButton(enabled ? R.string.lan_disable : R.string.lan_enable,
-                            (d, w) -> toggleLan(env, !enabled))
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show());
-        });
-    }
-
-    private void toggleLan(RuntimeEnv env, boolean enable) {
-        io.execute(() -> {
-            try {
-                String key = env.ensureAppConfig(enable);
-                env.writeEnvFile(key, enable);
-                final String admin = env.adminPassword();
-                handler.post(() -> {
-                    if (enable) {
-                        String ip = LocalNetwork.lanIp(this);
-                        String msg = (ip != null ? getString(R.string.lan_enabled, ip)
-                                                 : getString(R.string.lan_no_ip))
-                                + "\n\n" + getString(R.string.lan_admin_password, admin);
-                        new AlertDialog.Builder(this)
-                                .setTitle(R.string.lan_title)
-                                .setMessage(msg)
-                                .setPositiveButton(android.R.string.ok, null)
-                                .show();
-                    } else {
-                        Toast.makeText(this, R.string.lan_disabled, Toast.LENGTH_SHORT).show();
-                    }
-                    restartBackendAndReload();
-                });
-            } catch (Exception e) {
-                Log.e(TAG, "toggle lan failed", e);
-                handler.post(() -> Toast.makeText(this,
-                        "设置失败: " + e.getMessage(), Toast.LENGTH_LONG).show());
-            }
-        });
     }
 
     private void showBatteryDialog() {
@@ -812,12 +955,9 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, R.string.battery_ok, Toast.LENGTH_SHORT).show();
             return;
         }
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.battery_title)
-                .setMessage(R.string.battery_message)
-                .setPositiveButton(R.string.battery_go, (d, w) -> requestBatteryExemption())
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
+        showSelectableDialog(R.string.battery_title, getString(R.string.battery_message),
+                R.string.battery_go, (d, w) -> requestBatteryExemption(),
+                android.R.string.cancel);
     }
 
     @SuppressLint("BatteryLife")
@@ -881,7 +1021,7 @@ public class MainActivity extends AppCompatActivity {
         handler.post(() -> {
             if (ready) {
                 loading.setVisibility(View.GONE);
-                webView.loadUrl(BASE_URL);
+                webView.loadUrl(baseUrl());
             } else {
                 loadingText.setText(timeoutMsg);
             }
@@ -889,7 +1029,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean isServerUp() {
-        return waitForPort(RuntimeEnv.PORT, 600);
+        return waitForPort(new RuntimeEnv(this).listenPort(), 600);
     }
 
     private static boolean waitForPort(int port, long timeoutMs) {
@@ -1010,75 +1150,30 @@ public class MainActivity extends AppCompatActivity {
                     + "function isLogin(u,m){if(String(m).toUpperCase()!=='POST')return false;"
                     + "var p=pathOf(u);if(p==='/api/accounts')return true;"
                     + "if(p.slice(0,14)!=='/api/accounts/')return false;return p.slice(-6)==='/login';}"
-                    + "function started(u){try{AndroidLogin.onStarted(String(u||''));}catch(e){}}"
-                    + "function finished(ok,d){try{AndroidLogin.onFinished(!!ok,String(d==null?'':d));}catch(e){}}"
+                    + "function nextToken(){window.__a2apiLoginToken=(window.__a2apiLoginToken||0)+1;"
+                    + "return window.__a2apiLoginToken;}"
+                    + "function started(u,t){try{AndroidLogin.onStarted(String(u||''),t);}catch(e){}}"
+                    + "function finished(ok,d,t){try{AndroidLogin.onFinished(!!ok,String(d==null?'':d),t);}catch(e){}}"
                     + "var of=window.fetch;if(of){window.fetch=function(input,init){"
                     + "var url=(typeof input==='string')?input:(input&&input.url);"
                     + "var method=(init&&init.method)||(input&&input.method)||'GET';"
-                    + "var login=isLogin(url,method);if(login)started(url);"
+                    + "var login=isLogin(url,method);var t=0;if(login){t=nextToken();started(url,t);}"
                     + "var p=of.apply(this,arguments);"
-                    + "if(login){p=p.then(function(r){finished(r&&r.ok,r&&r.status);return r;},"
-                    + "function(e){finished(false,e&&e.message);throw e;});}"
+                    + "if(login){p=p.then(function(r){finished(r&&r.ok,r&&r.status,t);return r;},"
+                    + "function(e){finished(false,e&&e.message,t);throw e;});}"
                     + "return p;};}"
                     + "var oo=XMLHttpRequest.prototype.open,os=XMLHttpRequest.prototype.send;"
                     + "XMLHttpRequest.prototype.open=function(m,u){this.__a2m=m;this.__a2u=u;return oo.apply(this,arguments);};"
                     + "XMLHttpRequest.prototype.send=function(){"
                     + "var login=isLogin(this.__a2u,String(this.__a2m||'GET'));"
-                    + "if(login){var self=this;started(this.__a2u);"
-                    + "this.addEventListener('loadend',function(){finished(self.status>=200&&self.status<300,self.status);});}"
+                    + "if(login){var self=this;var t=nextToken();started(this.__a2u,t);"
+                    + "this.addEventListener('loadend',function(){finished(self.status>=200&&self.status<300,self.status,t);});}"
                     + "return os.apply(this,arguments);};"
                     + "})();";
 
     private void injectLoginHook(WebView view) {
         view.evaluateJavascript(LOGIN_HOOK_JS, null);
     }
-
-    /**
-     * The console's own HTML declares {@code width=device-width}, so on a phone
-     * it renders its narrow layout and panels end up clipped. Chrome's "Desktop
-     * site" works by ignoring that declaration; in a WebView the equivalent is to
-     * widen the layout viewport, so we rewrite the meta tag to a desktop width.
-     * With {@code useWideViewPort} + {@code loadWithOverviewMode} the WebView then
-     * zooms out to fit that width (nothing is cut off) and pinch-zoom works on top.
-     *
-     * Registered as a document-start script so the rewrite lands before the app's
-     * stylesheet is evaluated, with an onPageFinished sweep as a fallback.
-     */
-    private void applyDesktopViewport() {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            return;
-        }
-        try {
-            WebViewCompat.addDocumentStartJavaScript(
-                    webView, DESKTOP_VIEWPORT_JS,
-                    Collections.singleton("http://127.0.0.1:" + RuntimeEnv.PORT));
-        } catch (Exception e) {
-            Log.w(TAG, "document-start viewport script unavailable", e);
-        }
-    }
-
-    private void injectDesktopViewport(WebView view) {
-        view.evaluateJavascript(DESKTOP_VIEWPORT_JS, null);
-    }
-
-    private static final int DESKTOP_VIEWPORT_WIDTH = 1280;
-
-    private static final String DESKTOP_VIEWPORT_JS =
-            "(function(){var W=" + DESKTOP_VIEWPORT_WIDTH + ";"
-                    + "var CONTENT='width='+W+', minimum-scale=0.1, maximum-scale=5, user-scalable=yes';"
-                    + "function fix(m){try{if(!m||m.tagName!=='META')return false;"
-                    + "var n=(m.getAttribute('name')||'').toLowerCase();if(n!=='viewport')return false;"
-                    + "if(m.getAttribute('content')!==CONTENT)m.setAttribute('content',CONTENT);return true;}"
-                    + "catch(e){return false;}}"
-                    + "function scan(root){try{var l=root.querySelectorAll('meta[name=viewport]');"
-                    + "for(var i=0;i<l.length;i++)fix(l[i]);}catch(e){}}"
-                    + "function run(){scan(document);var d=document.documentElement;"
-                    + "if(!d||d.__a2apiViewportWatch)return;d.__a2apiViewportWatch=true;"
-                    + "try{new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){"
-                    + "var a=ms[i].addedNodes;for(var j=0;j<a.length;j++){var nd=a[j];"
-                    + "if(nd&&nd.nodeType===1&&!fix(nd))scan(nd);}}})"
-                    + ".observe(d,{childList:true,subtree:true});}catch(e){}}"
-                    + "run();})();";
 
     private void toast(String msg) {
         handler.post(() -> Toast.makeText(this, msg, Toast.LENGTH_LONG).show());
@@ -1190,6 +1285,9 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         if (stateReceiver != null) {
             unregisterReceiver(stateReceiver);
+        }
+        if (imeBar != null) {
+            imeBar.dismiss();
         }
         if (vncWebView != null) {
             vncWebView.loadUrl("about:blank");

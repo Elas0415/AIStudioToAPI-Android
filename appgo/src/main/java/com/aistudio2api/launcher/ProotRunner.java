@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
  * line by line.
  *
  * Used for one-shot maintenance (the Go backend's {@code setup --login}) and for
- * long-lived helper processes (the Xvfb + x11vnc + websockify login stack).
+ * long-lived helper processes (the Xvnc + websockify login stack).
  */
 public final class ProotRunner {
 

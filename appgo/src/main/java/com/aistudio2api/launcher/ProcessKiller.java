@@ -8,8 +8,9 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * Kills orphaned proot / camoufox / Xvfb / x11vnc / websockify / aistudio2api
- * processes owned by this app.
+ * Kills orphaned proot / camoufox / Xvnc / websockify / aistudio2api processes
+ * owned by this app. Two scopes are offered: everything (stop) and just the
+ * backend + its browser workers (restart, keeping the display session alive).
  *
  * Android's toybox `ps` does not expose a numeric UID column, so we filter by
  * this app's own process owner and match the command/name prefixes we care
@@ -20,16 +21,33 @@ final class ProcessKiller {
 
     private static final String TAG = "ProcessKiller";
 
-    private static final String[] NAMES = {
-            "aistudio2api", "camoufox", "camoufox-bin", "Xvfb", "x11vnc", "websockify",
-            "tinywm", "bash", "libproot.so",
+    /** Everything the app starts, including the virtual desktop stack. */
+    private static final String[] ALL_NAMES = {
+            "aistudio2api", "camoufox", "camoufox-bin", "Xvnc", "Xtigervnc",
+            "websockify", "tinywm", "bash", "libproot.so",
+    };
+
+    /**
+     * The backend and the browser workers it spawns. Used by 「重启服务」 so the
+     * Xvnc/websockify/tinywm display session stays up across a re-exec.
+     */
+    private static final String[] SERVICE_NAMES = {
+            "aistudio2api", "camoufox", "camoufox-bin",
     };
 
     private ProcessKiller() {
     }
 
     static void killBackendProcesses() {
-        Set<Integer> pids = collectPids();
+        kill(ALL_NAMES);
+    }
+
+    static void killServiceProcesses() {
+        kill(SERVICE_NAMES);
+    }
+
+    private static void kill(String[] names) {
+        Set<Integer> pids = collectPids(names);
         int self = android.os.Process.myPid();
         for (int pid : pids) {
             if (pid == self) {
@@ -44,7 +62,7 @@ final class ProcessKiller {
         }
     }
 
-    private static Set<Integer> collectPids() {
+    private static Set<Integer> collectPids(String[] names) {
         Set<Integer> pids = new LinkedHashSet<>();
         String owner = processOwner();
         try {
@@ -72,7 +90,7 @@ final class ProcessKiller {
                     if (owner != null && !owner.equals(cols[1])) {
                         continue;
                     }
-                    if (matchesName(cols[2])) {
+                    if (matchesName(cols[2], names)) {
                         try {
                             pids.add(Integer.parseInt(cols[0]));
                         } catch (NumberFormatException ignored) {
@@ -103,13 +121,13 @@ final class ProcessKiller {
         return null;
     }
 
-    private static boolean matchesName(String name) {
+    private static boolean matchesName(String name, String[] names) {
         String base = name;
         int slash = base.lastIndexOf('/');
         if (slash >= 0) {
             base = base.substring(slash + 1);
         }
-        for (String n : NAMES) {
+        for (String n : names) {
             if (base.equals(n) || base.startsWith(n)) {
                 return true;
             }

@@ -69,10 +69,27 @@
     background: transparent; color: transparent; caret-color: transparent;
     opacity: 0; pointer-events: none;
   }
+  /*
+    Local pointer indicator. Camoufox's fingerprint sets showcursor=false, so
+    the remote X cursor can be invisible; this ring follows the position the
+    joystick/buttons are driving, without touching the remote framebuffer.
+  */
+  #local-cursor {
+    position: fixed; left: 0; top: 0; width: 18px; height: 18px;
+    margin: -9px 0 0 -9px; box-sizing: border-box;
+    border: 2px solid rgba(255,255,255,0.95); border-radius: 50%;
+    box-shadow: 0 0 6px rgba(0,0,0,0.9);
+    pointer-events: none; z-index: 20; display: none;
+  }
+  #local-cursor::after {
+    content: ""; position: absolute; left: 5px; top: 5px;
+    width: 4px; height: 4px; border-radius: 50%; background: #fff;
+  }
 </style>
 </head>
 <body>
 <div id="screen"></div>
+<div id="local-cursor"></div>
 <textarea id="ime" aria-hidden="true" autocomplete="off" autocorrect="off"
           autocapitalize="off" spellcheck="false" tabindex="-1"></textarea>
 <div id="boot"><div class="ring"></div><div id="bootText">正在启动登录浏览器…</div></div>
@@ -84,6 +101,7 @@ const screenEl = document.getElementById('screen');
 const bootEl = document.getElementById('boot');
 const bootTextEl = document.getElementById('bootText');
 const imeEl = document.getElementById('ime');
+const localCursorEl = document.getElementById('local-cursor');
 
 let rfb = null;
 let bootTimer = null;
@@ -174,9 +192,40 @@ function refit() {
   refitQueued = false;
   if (rfb) {
     try { rfb.scaleViewport = true; } catch (e) { /* ignore */ }
+    enforceFit();
   }
   reportRemoteSize();
   reportMetrics();
+  updateLocalCursor();
+}
+
+/*
+ * Last line of defence: the canvas must never be bigger than the view it is
+ * shown in. If noVNC's own fit left it overflowing (the view changed size
+ * between two layouts, e.g. right after the app switched to landscape), force
+ * one more fit and, if that still does not help, set the scale by hand.
+ */
+function enforceFit() {
+  const canvas = screenEl.querySelector('canvas');
+  const fb = remoteSize();
+  if (!canvas || !fb || !rfb) return;
+  const vw = screenEl.clientWidth;
+  const vh = screenEl.clientHeight;
+  if (!vw || !vh) return;
+  const fits = () => {
+    const r = canvas.getBoundingClientRect();
+    return r.width <= vw + 1 && r.height <= vh + 1;
+  };
+  if (fits()) return;
+  try {
+    rfb.scaleViewport = false;
+    rfb.scaleViewport = true;
+  } catch (e) { /* ignore */ }
+  if (fits()) return;
+  try {
+    const s = Math.min(vw / fb[0], vh / fb[1]);
+    if (s > 0 && isFinite(s)) rfb._display.scale = s;
+  } catch (e) { /* ignore */ }
 }
 
 function scheduleRefit() {
@@ -281,6 +330,9 @@ function connect() {
       reportRemoteSize();
       // The framebuffer size only exists now, so this first fit is the real one.
       scheduleRefit();
+      // The view may still be settling (rotation / keyboard): fit once more
+      // after the layout has stopped moving.
+      setTimeout(scheduleRefit, 300);
       // The framebuffer is readable now; the poll above hides the notice as
       // soon as Camoufox paints its window.
       watchBoot();
@@ -302,6 +354,7 @@ function connect() {
  * Text input (used by the app bar's 「输入文本…」)
  * ------------------------------------------------------------------ */
 const XK_SHIFT = 0xFFE1;
+const XK_CTRL = 0xFFE3;
 const XK_RETURN = 0xFF0D;
 const SHIFTED = {
   '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7',
@@ -315,18 +368,11 @@ function tapKey(keysym) {
 }
 
 function typeChar(ch) {
-  let base = ch;
-  let shift = false;
-  if (/[A-Z]/.test(ch)) {
-    base = ch.toLowerCase();
-    shift = true;
-  } else if (SHIFTED[ch]) {
-    base = SHIFTED[ch];
-    shift = true;
-  }
-  if (shift) rfb.sendKey(XK_SHIFT, 'ShiftLeft', true);
-  tapKey(base.charCodeAt(0));
-  if (shift) rfb.sendKey(XK_SHIFT, 'ShiftLeft', false);
+  // Send the character's own keysym and let x11vnc pick the keycode *and* the
+  // shift level. Driving Shift ourselves looked equivalent but did not work:
+  // the server maps the next keysym without the modifier we pressed, so '@'
+  // arrived as '2' and ':' as ';'.
+  tapKey(ch.charCodeAt(0));
 }
 
 // Chars go out one at a time: Camoufox drops bursts sent in a single tick.
@@ -342,6 +388,166 @@ function sendText(text) {
   }
   return sendQueue;
 }
+
+/** Ctrl+A in the remote window: select the focused field's content. */
+function selectAllRemote() {
+  rfb.sendKey(XK_CTRL, 'ControlLeft', true);
+  tapKey(0x61); // 'a'
+  rfb.sendKey(XK_CTRL, 'ControlLeft', false);
+}
+
+/* ------------------------------------------------------------------ *
+ * Virtual mouse: the app's left joystick sends relative movement, the right
+ * buttons send RFB left/right button masks. Both only inject pointer events;
+ * normal page taps still go through noVNC's own handlers.
+ * ------------------------------------------------------------------ */
+let mouseX = null;
+let mouseY = null;
+let mouseFb = '';
+let mouseMask = 0;
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function pointerSize() {
+  const fb = remoteSize();
+  if (!fb || !rfb) return null;
+  const key = fb[0] + 'x' + fb[1];
+  if (mouseFb !== key || mouseX === null || mouseY === null) {
+    mouseFb = key;
+    mouseX = fb[0] / 2;
+    mouseY = fb[1] / 2;
+  }
+  return fb;
+}
+
+function sendMousePointer() {
+  if (!rfb || mouseX === null || mouseY === null) return false;
+  updateLocalCursor();
+  try {
+    if (rfb._rfbConnectionState !== 'connected' || !rfb._sock) return false;
+    // Framebuffer coordinates: bypass the view->framebuffer mapping used by
+    // noVNC's own mouse handler, because our pointer is already remote-space.
+    RFB.messages.pointerEvent(rfb._sock, Math.round(mouseX), Math.round(mouseY), mouseMask);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function updateLocalCursor() {
+  if (!localCursorEl) return;
+  const canvas = screenEl.querySelector('canvas');
+  const fb = remoteSize();
+  if (!canvas || !fb || mouseX === null || mouseY === null) {
+    localCursorEl.style.display = 'none';
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    localCursorEl.style.display = 'none';
+    return;
+  }
+  const x = rect.left + mouseX / fb[0] * rect.width;
+  const y = rect.top + mouseY / fb[1] * rect.height;
+  localCursorEl.style.display = 'block';
+  localCursorEl.style.transform = 'translate(' + x + 'px,' + y + 'px)';
+}
+
+window.__a2apiMove = function (dx, dy) {
+  const fb = pointerSize();
+  if (!fb) return false;
+  const step = Math.max(fb[0], fb[1]) * 0.010;
+  mouseX = clamp(mouseX + dx * step, 0, fb[0] - 1);
+  mouseY = clamp(mouseY + dy * step, 0, fb[1] - 1);
+  return sendMousePointer();
+};
+
+window.__a2apiButton = function (button, down) {
+  const fb = pointerSize();
+  if (!fb) return false;
+  const bit = button === 2 ? 4 : 1; // RFB: 1=left, 4=right
+  if (down) mouseMask |= bit; else mouseMask &= ~bit;
+  return sendMousePointer();
+};
+
+window.__a2apiRelease = function () {
+  mouseMask = 0;
+  sendMousePointer();
+};
+
+window.__a2apiMouseState = function () {
+  return {
+    state: rfb ? rfb._rfbConnectionState : null,
+    socket: !!(rfb && rfb._sock),
+    fb: remoteSize(),
+    x: mouseX,
+    y: mouseY,
+    mask: mouseMask,
+  };
+};
+
+function trackPointer(clientX, clientY) {
+  const canvas = screenEl.querySelector('canvas');
+  const fb = remoteSize();
+  if (!canvas || !fb) return;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  mouseX = clamp((clientX - rect.left) * fb[0] / rect.width, 0, fb[0] - 1);
+  mouseY = clamp((clientY - rect.top) * fb[1] / rect.height, 0, fb[1] - 1);
+  mouseFb = fb[0] + 'x' + fb[1];
+  updateLocalCursor();
+}
+
+['pointerdown', 'pointermove', 'mousedown', 'mousemove', 'touchstart', 'touchmove']
+  .forEach(function (type) {
+    screenEl.addEventListener(type, function (e) {
+      if (e.touches && e.touches.length) {
+        trackPointer(e.touches[0].clientX, e.touches[0].clientY);
+      } else {
+        trackPointer(e.clientX, e.clientY);
+      }
+    }, { capture: true, passive: true });
+  });
+
+/*
+ * Entry point for the app's 「键盘」 bar. Types the text into whatever field the
+ * remote window has focused and then presses Return, so one Enter on the phone
+ * both fills and submits the field. An empty text still sends Return.
+ *
+ * With {@code replace} the field is select-all'd first, so re-sending an edited
+ * text overwrites what is already there instead of appending to it.
+ */
+/** 「重连」: put the remote browser back on the sign-in page. */
+window.__a2apiNav = function (url) {
+  if (!rfb) return false;
+  // Ctrl+L focuses and selects the address bar, so the URL replaces it.
+  rfb.sendKey(XK_CTRL, 'ControlLeft', true);
+  tapKey(0x6C); // 'l'
+  rfb.sendKey(XK_CTRL, 'ControlLeft', false);
+  setTimeout(() => {
+    sendText(String(url)).then(() => setTimeout(() => tapKey(XK_RETURN), 120));
+  }, 250);
+  return true;
+};
+
+window.__a2apiSend = function (text, replace) {
+  if (!rfb) return false;
+  const body = text == null ? '' : String(text);
+  const submit = () => {
+    const typed = body ? sendText(body) : Promise.resolve();
+    typed.then(() => setTimeout(() => tapKey(XK_RETURN), 40));
+  };
+  if (replace) {
+    selectAllRemote();
+    // Let the selection land before the first character arrives.
+    setTimeout(submit, 80);
+  } else {
+    submit();
+  }
+  return true;
+};
 
 /* ------------------------------------------------------------------ *
  * Soft keyboard (IME) passthrough.
@@ -393,12 +599,120 @@ imeEl.addEventListener('keydown', (e) => {
   }
 });
 
-// Tap (not pinch, not drag) = "I want to type": bring the keyboard up. The
-// touch has already gone to noVNC by then, so clicking a field still works.
+/* ------------------------------------------------------------------ *
+ * Cursor shape: is the remote pointer over a text field?
+ *
+ * noVNC draws the server's cursor bitmap into its own <canvas> appended to
+ * <body> (the touch fallback), so the shape is readable from the page. An
+ * I-beam is narrow with wide serifs on its first and last row; an arrow grows
+ * from a one-pixel tip instead. That is what lets a tap raise the keyboard
+ * only on inputs, instead of on every click.
+ * ------------------------------------------------------------------ */
+function cursorCanvas() {
+  const kids = document.body.children;
+  for (let i = 0; i < kids.length; i++) {
+    if (kids[i].tagName === 'CANVAS') return kids[i];
+  }
+  return null;
+}
+
+function textCursorVisible() {
+  const c = cursorCanvas();
+  if (!c || !c.width || !c.height) return false;
+  const w = c.width, h = c.height;
+  let d;
+  try {
+    d = c.getContext('2d').getImageData(0, 0, w, h).data;
+  } catch (e) {
+    return false;
+  }
+  const rows = [];
+  let minY = -1, maxY = -1, minX = w, maxX = -1;
+  for (let y = 0; y < h; y++) {
+    let first = -1, last = -1;
+    for (let x = 0; x < w; x++) {
+      if (d[(y * w + x) * 4 + 3] > 40) {
+        if (first < 0) first = x;
+        last = x;
+      }
+    }
+    rows.push([first, last]);
+    if (first >= 0) {
+      if (minY < 0) minY = y;
+      maxY = y;
+      if (first < minX) minX = first;
+      if (last > maxX) maxX = last;
+    }
+  }
+  if (maxX < 0) return false;
+  const bw = maxX - minX + 1;
+  const bh = maxY - minY + 1;
+  if (bh < 10 || bw > 14) return false;
+  // A plain bar (no serifs) is still a text caret.
+  if (bw <= 4) return true;
+  const topW = rows[minY][1] - rows[minY][0] + 1;
+  const botW = rows[maxY][1] - rows[maxY][0] + 1;
+  const midW = rows[minY + Math.floor(bh / 2)][1] - rows[minY + Math.floor(bh / 2)][0] + 1;
+  return topW >= 3 && botW >= 3 && midW < topW;
+}
+
+// Tap (not pinch, not drag) = a click. If the click lands on a text field the
+// server turns the pointer into an I-beam; only then is the keyboard wanted.
 let tapStart = 0;
 let tapX = 0;
 let tapY = 0;
 let multiTouch = false;
+let imeProbe = 0;
+
+/*
+ * Reads the text of the remote field that was just tapped.
+ *
+ * The app's input bar is a native EditText and cannot see the remote DOM, so
+ * without this it would either start empty (nothing to edit) or, worse, keep
+ * the previous field's text when the user moves on to the next field. Select
+ * all + copy in the remote browser puts the field's text on the X clipboard,
+ * which x11vnc mirrors to noVNC as a "clipboard" event. Resolves with "" when
+ * nothing arrives (empty field, password field, or no clipboard sync).
+ */
+function readFocusedField(cb) {
+  let done = false;
+  const finish = (text) => {
+    if (done) return;
+    done = true;
+    rfb.removeEventListener('clipboard', onClipboard);
+    cb(text);
+  };
+  const onClipboard = (e) => finish((e.detail && e.detail.text) || '');
+  rfb.addEventListener('clipboard', onClipboard);
+  rfb.sendKey(XK_CTRL, 'ControlLeft', true);
+  tapKey(0x61); // 'a' — select the field's content
+  tapKey(0x63); // 'c' — copy it to the X clipboard
+  rfb.sendKey(XK_CTRL, 'ControlLeft', false);
+  setTimeout(() => finish(''), 700);
+}
+
+function reportFieldText(text) {
+  try {
+    if (window.AndroidVnc && AndroidVnc.onFieldText) AndroidVnc.onFieldText(text);
+  } catch (e) { /* page still usable without the app */ }
+}
+
+function maybeShowIme(attempt, token) {
+  if (token !== imeProbe) return;
+  if (textCursorVisible()) {
+    readFocusedField(reportFieldText);
+    focusIme();
+    return;
+  }
+  if (attempt < 3) {
+    setTimeout(() => maybeShowIme(attempt + 1, token), 180);
+  } else if (document.activeElement === imeEl) {
+    // Tapped something that is not a text field: put the keyboard away and
+    // forget the field's text, so the next field starts clean.
+    imeEl.blur();
+    reportFieldText('');
+  }
+}
 
 screenEl.addEventListener('touchstart', (e) => {
   if (e.touches.length > 1) {
@@ -420,29 +734,12 @@ screenEl.addEventListener('touchend', (e) => {
   if (!t) return;
   const moved = Math.abs(t.clientX - tapX) + Math.abs(t.clientY - tapY);
   if (Date.now() - tapStart < 350 && moved < 16) {
-    focusIme();
-    // The tap's default action may move focus back to the canvas.
-    setTimeout(focusIme, 60);
+    // The click itself has already gone to noVNC; wait for the cursor update
+    // that tells us whether it landed on an input.
+    const token = ++imeProbe;
+    setTimeout(() => maybeShowIme(0, token), 150);
   }
 }, { passive: true });
-
-/* ------------------------------------------------------------------ *
- * Interface used by MainActivity via evaluateJavascript().
- * ------------------------------------------------------------------ */
-window.__a2api = {
-  typeText(text) {
-    if (!rfb || typeof text !== 'string') return;
-    try { rfb.focus(); } catch (e) { /* ignore */ }
-    sendText(text);
-  },
-  keyboard() {
-    focusIme();
-  },
-  // Measured geometry, for the app's 「适配信息」 dialog.
-  metrics() {
-    return JSON.stringify(metrics());
-  },
-};
 
 connect();
 </script>

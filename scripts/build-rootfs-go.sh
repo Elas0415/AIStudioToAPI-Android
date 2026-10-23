@@ -16,6 +16,7 @@
 # Environment overrides:
 #   BASE_ROOTFS  base rootfs.tar.zst        (default app/src/main/assets/rootfs.tar.zst)
 #   BACKEND_BIN  prebuilt aistudio2api bin  (skips the download)
+#   CAMOUFOX_DIR extracted Camoufox 152 dir (replaces the :app rootfs's 135 build)
 #   OUT          output rootfs.tar.zst      (default appgo/src/main/assets/rootfs.tar.zst)
 #   WORK         scratch directory          (default /tmp/opencode/rootfs-go-build)
 #   ZSTD_LEVEL   zstd compression level     (default 19)
@@ -82,6 +83,22 @@ if [ ! -e "$ROOTFS/opt/camoufox" ]; then
 else
   log "Reusing already-extracted rootfs at $ROOTFS"
 fi
+
+# The :app base rootfs ships Camoufox 135, but AIStudio2API v0.2.13 aligns its
+# fingerprint/TLS transport with 152.0.4-beta.29. A 135 page makes AI Studio
+# return HTTP 403 / code 7, so replace it when CAMOUFOX_DIR is provided.
+if [ -n "${CAMOUFOX_DIR:-}" ]; then
+  [ -x "$CAMOUFOX_DIR/camoufox-bin" ] || {
+    echo "CAMOUFOX_DIR has no camoufox-bin: $CAMOUFOX_DIR"; exit 1; }
+  log "Replacing Camoufox with $CAMOUFOX_DIR"
+  rm -rf "$ROOTFS/opt/camoufox"
+  cp -a "$CAMOUFOX_DIR" "$ROOTFS/opt/camoufox"
+fi
+CAMOUFOX_VERSION="$(sed -n 's/^Version=//p' \
+  "$ROOTFS/opt/camoufox/application.ini" 2>/dev/null | head -1)"
+echo "Camoufox version: ${CAMOUFOX_VERSION:-unknown}"
+[ "$CAMOUFOX_VERSION" = "152.0.4-beta.29" ] || \
+  log "WARNING: expected Camoufox 152.0.4-beta.29; the current build may 403"
 
 # ---------------------------------------------------------------------------
 # 3. Strip build/runtime caches we do not need (keeps the APK smaller).
