@@ -1,6 +1,4 @@
 # AIStudioToAPI-Android
-
-> ⚠️ **这是非官方分支项目（Unofficial Fork / Port）**
 >
 > 本项目是 [**iBUHub/AIStudioToAPI**](https://github.com/iBUHub/AIStudioToAPI)
 > 的 **非官方 Android 移植分支**，并非原作者发布。上游的上级来源为
