@@ -1138,6 +1138,14 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** 后端自更新完成后由 {@link UpdateChecker} 调用：重启服务并重新加载控制台。 */
+    void restartAfterUpdate() {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+        restartBackendAndReload();
+    }
+
     private void restartBackendAndReload() {
         loginPending = false;
         hideLoginOverlay(false);

@@ -139,29 +139,80 @@ public class UpdateChecker {
     private void applyUpdate(String latest) {
         Toast.makeText(activity, "正在调用原项目更新器…", Toast.LENGTH_SHORT).show();
         io.execute(() -> {
+            JSONObject status = null;
             try {
-                JSONObject status = request("POST", "/api/update", 300_000);
-                String current = status.optString("current", latest);
-                handler.post(() -> show(new AlertDialog.Builder(activity)
-                        .setTitle("更新已开始")
-                        .setMessage("后端正在更新到 " + latest + "。\n"
-                                + "当前返回版本：" + current + "\n\n"
-                                + "更新完成后管理服务会自动重启，稍后刷新页面即可。")
-                        .setPositiveButton(android.R.string.ok, null)));
+                // 后端同步下载并替换二进制；替换完成后它可能自行退出，连接中断属正常。
+                status = request("POST", "/api/update", 600_000);
             } catch (Exception e) {
-                Log.e(TAG, "apply update failed", e);
-                handler.post(() -> show(new AlertDialog.Builder(activity)
-                        .setTitle("更新请求已发出")
-                        .setMessage("服务可能正在重启，连接被中断是正常现象。\n\n"
-                                + "请等待约 30 秒后刷新页面；若仍显示旧版本，请打开 Release 页手动更新。\n\n"
-                                + e.getMessage())
-                        .setPositiveButton("打开 Release 页",
-                                (d, w) -> openBrowser(UPSTREAM_RELEASES_PAGE))
-                        .setNegativeButton(android.R.string.cancel, null)));
-            } finally {
-                io.shutdown();
+                Log.w(TAG, "apply update interrupted (backend may be restarting)", e);
             }
+            String error = waitForUpdateFinished(status);
+            handler.post(() -> {
+                if (error == null) {
+                    show(new AlertDialog.Builder(activity)
+                            .setTitle("更新完成")
+                            .setMessage("已安装 " + latest + "。\n\n"
+                                    + "正在重启服务以加载新二进制，界面会在服务就绪后自动刷新。")
+                            .setPositiveButton(android.R.string.ok, null));
+                    restartService();
+                } else {
+                    show(new AlertDialog.Builder(activity)
+                            .setTitle("更新未完成")
+                            .setMessage(error + "\n\n"
+                                    + "可以稍后重试，或打开 Release 页手动更新。")
+                            .setPositiveButton("打开 Release 页",
+                                    (d, w) -> openBrowser(UPSTREAM_RELEASES_PAGE))
+                            .setNegativeButton(android.R.string.cancel, null));
+                }
+            });
+            io.shutdown();
         });
+    }
+
+    /**
+     * 等后端把更新做完（{@code updating} 变回 false）。
+     *
+     * <p>更新期间后端可能先退出再被替换，轮询失败按“还在重启”处理，直到超时。
+     *
+     * @return null 表示已完成；否则返回错误说明
+     */
+    private String waitForUpdateFinished(JSONObject status) {
+        long deadline = System.currentTimeMillis() + 10 * 60_000L;
+        JSONObject current = status;
+        while (true) {
+            if (current != null && !current.optBoolean("updating", false)) {
+                String error = current.optString("error", "").trim();
+                return error.isEmpty() ? null : error;
+            }
+            if (System.currentTimeMillis() > deadline) {
+                return "等待更新完成超时（10 分钟）。";
+            }
+            try {
+                Thread.sleep(3000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return "已取消。";
+            }
+            try {
+                current = request("GET", "/api/update", 20_000);
+            } catch (Exception e) {
+                current = null;
+            }
+        }
+    }
+
+    /** 重启本地服务；新二进制只有重新 exec 才会生效。 */
+    private void restartService() {
+        try {
+            if (activity instanceof MainActivity) {
+                ((MainActivity) activity).restartAfterUpdate();
+            } else {
+                activity.startService(new Intent(activity, ServerService.class)
+                        .setAction(ServerService.ACTION_RESTART));
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "restart after update failed", e);
+        }
     }
 
     /** Calls the local backend; the backend owns GitHub/proxy/digest handling. */

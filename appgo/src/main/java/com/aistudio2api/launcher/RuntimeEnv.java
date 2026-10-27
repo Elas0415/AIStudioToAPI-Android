@@ -389,7 +389,18 @@ final class RuntimeEnv {
     // App config (apiKey), persisted as JSON.
     // ------------------------------------------------------------------
 
+    /**
+     * 当前生效的 API key。
+     *
+     * <p>以 .env 为准：控制台保存的 PROXY_API_KEY 必须能跨 App 重启存活。
+     * 只有 .env 里根本没有这个键时（首次启动前）才回落到 App 自己的配置。
+     */
     String apiKey() {
+        Map<String, String> values = readEnvFile();
+        if (values.containsKey("PROXY_API_KEY")) {
+            String value = values.get("PROXY_API_KEY");
+            return value == null ? "" : value.trim();
+        }
         return appConfig("apiKey");
     }
 
@@ -1026,7 +1037,16 @@ final class RuntimeEnv {
         // LISTEN_ADDR (host and port) and ADMIN_* belong to the console. Only
         // provide the first-run default; never overwrite what the user saved.
         putDefault(values, "LISTEN_ADDR", LOOPBACK + ":" + PORT);
-        values.put("PROXY_API_KEY", apiKey == null ? "" : apiKey);
+        // PROXY_API_KEY also belongs to the console: only generate it when .env
+        // does not have the key yet. An explicitly emptied key stays empty, and
+        // either way the value is mirrored into config/app.json so the menu's
+        // update check authenticates with the same key.
+        boolean hasEnvKey = values.containsKey("PROXY_API_KEY");
+        String effectiveKey = hasEnvKey
+                ? (values.get("PROXY_API_KEY") == null ? "" : values.get("PROXY_API_KEY").trim())
+                : (apiKey == null ? "" : apiKey.trim());
+        values.put("PROXY_API_KEY", effectiveKey);
+        writeAppConfig(effectiveKey);
         // The rootfs now ships Camoufox 152.0.4-beta.29, the version AIStudio2API
         // v0.2.13 expects. Keep the browser-backed WAA as the default; `go` is
         // still available by setting WAA_BACKEND=go for a browserless runtime.
