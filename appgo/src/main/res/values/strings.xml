@@ -38,6 +38,9 @@
     <string name="login_ime_hint">输入内容，回车发送</string>
     <string name="login_ime_send">发送</string>
 
+    <string name="menu_diag">运行环境诊断</string>
+    <string name="diag_title">运行环境诊断</string>
+    <string name="startup_failed">启动失败</string>
     <string name="battery_title">后台保活设置</string>
     <string name="battery_message">将本应用加入电池优化白名单，避免服务在后台被系统杀掉。\n建议同时允许自启动。</string>
     <string name="battery_go">去设置</string>

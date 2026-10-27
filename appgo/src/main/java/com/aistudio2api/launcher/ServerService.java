@@ -42,6 +42,12 @@ public class ServerService extends Service {
 
     static final String BROADCAST_STATE = "com.aistudio2api.launcher.STATE";
     static final String EXTRA_RUNNING = "running";
+    /** 启动失败/进程退出时附带的原因（含日志尾部），界面直接显示而不是干等超时 */
+    static final String EXTRA_ERROR = "error";
+
+    /** 最近的后端输出，失败时随广播带给界面，也便于用户复制 */
+    private static final int RECENT_LINES = 80;
+    private final java.util.ArrayDeque<String> recent = new java.util.ArrayDeque<>();
 
     static final int MAX_CONSECUTIVE_CRASHES = 3;
 
@@ -95,7 +101,7 @@ public class ServerService extends Service {
             Log.e(TAG, "failed to launch backend", e);
             running.set(false);
             updateNotification("启动失败: " + e.getMessage());
-            notifyState(false);
+            notifyState(false, "启动失败: " + e.getMessage() + "\n\n" + recentTail());
         }
     }
 
@@ -155,7 +161,7 @@ public class ServerService extends Service {
             Log.e(TAG, "failed to launch backend", e);
             running.set(false);
             updateNotification("启动失败: " + e.getMessage());
-            notifyState(false);
+            notifyState(false, "启动失败: " + e.getMessage() + "\n\n" + recentTail());
         }
     }
 
@@ -238,6 +244,8 @@ public class ServerService extends Service {
                 if (crashCount <= MAX_CONSECUTIVE_CRASHES) {
                     updateNotification("服务崩溃 (code " + code + ")，第 "
                             + crashCount + " 次自动重启…");
+                    notifyState(false, "后端进程退出 (code " + code + ")，正在第 "
+                            + crashCount + " 次重试…\n\n" + recentTail());
                     sleep(2000L * crashCount);
                     if (!running.get()) {
                         startBackend();
@@ -245,6 +253,8 @@ public class ServerService extends Service {
                 } else {
                     releaseWakeLock();
                     updateNotification("服务连续崩溃 " + crashCount + " 次，已停止自动重启，请查看日志");
+                    notifyState(false, "后端连续崩溃 " + crashCount + " 次，已停止自动重启。\n\n"
+                            + recentTail());
                 }
             }
         }
@@ -324,6 +334,12 @@ public class ServerService extends Service {
             byte[] nl = "\n".getBytes("UTF-8");
             while ((line = r.readLine()) != null) {
                 Log.i(TAG, "[a2api] " + line);
+                synchronized (recent) {
+                    recent.addLast(line);
+                    while (recent.size() > RECENT_LINES) {
+                        recent.removeFirst();
+                    }
+                }
                 out.write(line.getBytes("UTF-8"));
                 out.write(nl);
                 out.flush();
@@ -333,10 +349,28 @@ public class ServerService extends Service {
     }
 
     private void notifyState(boolean isRunning) {
+        notifyState(isRunning, null);
+    }
+
+    private void notifyState(boolean isRunning, String error) {
         Intent i = new Intent(BROADCAST_STATE);
         i.setPackage(getPackageName());
         i.putExtra(EXTRA_RUNNING, isRunning);
+        if (error != null) {
+            i.putExtra(EXTRA_ERROR, error);
+        }
         sendBroadcast(i);
+    }
+
+    /** 最近的后端输出，最多 {@link #RECENT_LINES} 行 */
+    String recentTail() {
+        StringBuilder sb = new StringBuilder();
+        synchronized (recent) {
+            for (String line : recent) {
+                sb.append(line).append('\n');
+            }
+        }
+        return sb.toString().trim();
     }
 
     private static void sleep(long ms) {

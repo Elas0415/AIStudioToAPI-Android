@@ -52,12 +52,21 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 
+import android.os.StatFs;
+import android.system.Os;
+import android.system.OsConstants;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Executors;
 
 import org.json.JSONObject;
@@ -129,6 +138,9 @@ public class MainActivity extends AppCompatActivity {
     private volatile int loginToken;
     /** Guards against a stale "wait for websockify" probe loading the view. */
     private int vncLoadToken;
+    /** 上一次已展示过的启动错误，避免崩溃重试时反复弹窗。 */
+    private String lastStartupError;
+
     /** Last remote desktop size reported by the page (see {@link VncBridge}). */
     private int vncRemoteW, vncRemoteH;
     /** Last geometry reported by the login page (see VncBridge#onMetrics). */
@@ -169,8 +181,13 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onReceive(Context context, Intent intent) {
                 boolean running = intent.getBooleanExtra(ServerService.EXTRA_RUNNING, false);
+                String error = intent.getStringExtra(ServerService.EXTRA_ERROR);
                 if (running) {
+                    lastStartupError = null;
                     waitForServerAndLoad();
+                } else if (error != null && !error.equals(lastStartupError)) {
+                    lastStartupError = error;
+                    showStartupError(error);
                 }
             }
         };
@@ -898,12 +915,156 @@ public class MainActivity extends AppCompatActivity {
         } else if (id == R.id.action_battery) {
             showBatteryDialog();
             return true;
+        } else if (id == R.id.action_diag) {
+            showDiagnostics();
+            return true;
         } else if (id == R.id.action_about) {
             showSelectableDialog(R.string.menu_about, getString(R.string.about_message),
                     android.R.string.ok, null, 0);
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    /** 启动失败时直接把原因与日志尾部显示出来，而不是让加载页干等到超时。 */
+    private void showStartupError(String error) {
+        handler.post(() -> {
+            loading.setVisibility(View.GONE);
+            showSelectableDialog(R.string.startup_failed, error, android.R.string.ok, null, 0);
+        });
+    }
+
+    /**
+     * 「运行环境诊断」：Android 侧无法复现时，把内核、页大小、SELinux、可用空间、
+     * PRoot 冒烟测试与后端日志尾部一次性导出，便于定位厂商差异。
+     */
+    private void showDiagnostics() {
+        loadingText.setText("正在收集诊断信息…");
+        loading.setVisibility(View.VISIBLE);
+        io.execute(() -> {
+            String report;
+            try {
+                report = buildDiagnostics();
+            } catch (Throwable t) {
+                report = "收集诊断信息失败: " + t;
+            }
+            String text = report;
+            handler.post(() -> {
+                loading.setVisibility(View.GONE);
+                showSelectableDialog(R.string.diag_title, text, android.R.string.ok, null, 0);
+            });
+        });
+    }
+
+    private String buildDiagnostics() {
+        RuntimeEnv env = new RuntimeEnv(this);
+        StringBuilder sb = new StringBuilder();
+        sb.append("应用: ").append(getPackageName());
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            sb.append(' ').append(info.versionName).append(" (")
+                    .append(android.os.Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode)
+                    .append(')');
+        } catch (Exception ignored) {
+        }
+        sb.append('\n');
+        sb.append("厂商/机型: ").append(Build.MANUFACTURER).append(' ')
+                .append(Build.MODEL).append(" (").append(Build.DEVICE).append(")\n");
+        sb.append("系统: Android ").append(Build.VERSION.RELEASE)
+                .append(" / API ").append(Build.VERSION.SDK_INT).append('\n');
+        sb.append("ABI: ").append(String.join(",", Build.SUPPORTED_ABIS)).append('\n');
+        sb.append("SELinux: ").append(readFirstLine("/sys/fs/selinux/enforce").equals("1")
+                ? "enforcing" : "permissive/unknown").append('\n');
+        try {
+            sb.append("页大小: ").append(Os.sysconf(OsConstants._SC_PAGESIZE)).append(" bytes\n");
+        } catch (Throwable t) {
+            sb.append("页大小: 读取失败 ").append(t).append('\n');
+        }
+        sb.append("内核: ").append(readFirstLine("/proc/version")).append('\n');
+        sb.append(envSummary(env));
+        sb.append("PRoot 冒烟测试: ").append(prootSmokeTest(env)).append('\n');
+        sb.append("\n---- 后端日志尾部 ----\n").append(tailLog(env, 40));
+        return sb.toString();
+    }
+
+    private String envSummary(RuntimeEnv env) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            File marker = new File(getFilesDir(), RuntimeEnv.ROOT_MARKER);
+            sb.append("运行时已解压: ").append(marker.exists()).append('\n');
+            File rootfs = new File(getFilesDir(), "runtime/rootfs");
+            sb.append("rootfs 存在: ").append(rootfs.isDirectory()).append('\n');
+            StatFs stat = new StatFs(getFilesDir().getAbsolutePath());
+            long freeGb = stat.getAvailableBytes() / (1024L * 1024L * 1024L);
+            sb.append("可用空间: ").append(freeGb).append(" GB\n");
+        } catch (Throwable t) {
+            sb.append("环境检查失败: ").append(t).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /** 用与后端相同的 proot 参数跑一次 /bin/echo，失败时带上原始输出。 */
+    private String prootSmokeTest(RuntimeEnv env) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(env.prootCommandFor("/bin/sh", "-c", "echo ok"));
+            pb.directory(env.prootDir());
+            pb.redirectErrorStream(true);
+            pb.environment().putAll(env.prootEnv());
+            Process p = pb.start();
+            StringBuilder out = new StringBuilder();
+            Thread drain = new Thread(() -> {
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        if (out.length() < 2000) {
+                            out.append(line).append('\n');
+                        }
+                    }
+                } catch (IOException ignored) {
+                }
+            }, "diag-drain");
+            drain.setDaemon(true);
+            drain.start();
+            if (!p.waitFor(20, TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                return "超时（20s 未退出）\n" + out;
+            }
+            String text = out.toString().trim();
+            return (p.exitValue() == 0 ? "OK " : "退出码 " + p.exitValue() + " ") + text;
+        } catch (Throwable t) {
+            return "启动失败: " + t;
+        }
+    }
+
+    private String tailLog(RuntimeEnv env, int lines) {
+        File log = new File(env.logsDir(), "aistudio2api.log");
+        if (!log.isFile()) {
+            return "（还没有日志文件）";
+        }
+        java.util.ArrayDeque<String> tail = new java.util.ArrayDeque<>();
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(new FileInputStream(log), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                tail.addLast(line);
+                while (tail.size() > lines) {
+                    tail.removeFirst();
+                }
+            }
+        } catch (IOException e) {
+            return "读取日志失败: " + e;
+        }
+        return String.join("\n", tail);
+    }
+
+    private String readFirstLine(String path) {
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(new FileInputStream(path), StandardCharsets.UTF_8))) {
+            String line = r.readLine();
+            return line == null ? "" : line.trim();
+        } catch (Exception e) {
+            return "读取失败: " + e.getMessage();
+        }
     }
 
     /**
