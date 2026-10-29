@@ -13,6 +13,7 @@ import android.widget.Toast;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -41,7 +42,16 @@ public class UpdateChecker {
 
     private final Activity activity;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    /**
+     * check() and applyUpdate() share one background thread. It must never be shut
+     * down: the update dialog outlives check(), and submitting to a terminated
+     * executor throws RejectedExecutionException on the UI thread (app crash).
+     */
+    private static final ExecutorService IO = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "backend-updater");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final RuntimeEnv env;
 
     public UpdateChecker(Activity activity) {
@@ -52,7 +62,7 @@ public class UpdateChecker {
     /** Entry point from the menu. */
     public void check() {
         Toast.makeText(activity, "正在通过本地服务检查原项目更新…", Toast.LENGTH_SHORT).show();
-        io.execute(() -> {
+        IO.execute(() -> {
             try {
                 JSONObject status = request("GET", "/api/update?refresh=1", 30_000);
                 handler.post(() -> showStatus(status));
@@ -67,8 +77,7 @@ public class UpdateChecker {
                                 (d, w) -> openBrowser(UPSTREAM_RELEASES_PAGE))
                         .setNegativeButton(android.R.string.cancel, null)));
             } finally {
-                io.shutdown();
-            }
+                }
         });
     }
 
@@ -137,71 +146,94 @@ public class UpdateChecker {
     }
 
     private void applyUpdate(String latest) {
+        if (activity.isFinishing() || activity.isDestroyed()) {
+            return;
+        }
         Toast.makeText(activity, "正在调用原项目更新器…", Toast.LENGTH_SHORT).show();
-        io.execute(() -> {
+        final String previous = env.installedBackendVersion();
+        IO.execute(() -> {
             JSONObject status = null;
             try {
-                // 后端同步下载并替换二进制；替换完成后它可能自行退出，连接中断属正常。
+                // 后端同步下载并替换二进制，替换后它会重启自身，连接中断属正常。
                 status = request("POST", "/api/update", 600_000);
             } catch (Exception e) {
                 Log.w(TAG, "apply update interrupted (backend may be restarting)", e);
             }
-            String error = waitForUpdateFinished(status);
+            String error = waitForUpdateFinished(status, previous);
+            String installed = status != null
+                    ? status.optString("current", latest).trim()
+                    : latest;
+            if (error == null) {
+                try {
+                    env.setInstalledBackendVersion(installed);
+                } catch (IOException e) {
+                    Log.w(TAG, "cannot record backend version", e);
+                }
+            }
+            final String result = error;
+            final String version = installed;
             handler.post(() -> {
-                if (error == null) {
+                if (result == null) {
                     show(new AlertDialog.Builder(activity)
                             .setTitle("更新完成")
-                            .setMessage("已安装 " + latest + "。\n\n"
+                            .setMessage("后端已更新到 " + version + "。\n\n"
                                     + "正在重启服务以加载新二进制，界面会在服务就绪后自动刷新。")
                             .setPositiveButton(android.R.string.ok, null));
                     restartService();
                 } else {
                     show(new AlertDialog.Builder(activity)
                             .setTitle("更新未完成")
-                            .setMessage(error + "\n\n"
+                            .setMessage(result + "\n\n"
                                     + "可以稍后重试，或打开 Release 页手动更新。")
                             .setPositiveButton("打开 Release 页",
                                     (d, w) -> openBrowser(UPSTREAM_RELEASES_PAGE))
                             .setNegativeButton(android.R.string.cancel, null));
                 }
             });
-            io.shutdown();
         });
     }
 
     /**
-     * 等后端把更新做完（{@code updating} 变回 false）。
+     * 等更新落地。
      *
-     * <p>更新期间后端可能先退出再被替换，轮询失败按“还在重启”处理，直到超时。
-     *
-     * @return null 表示已完成；否则返回错误说明
+     * <p>POST 是同步的：正常返回即已替换完成。若连接被后端的自我重启打断，
+     * 轮询 GET /api/update，直到 updating 变回 false 且版本号已经变化；
+     * 期间连不上按“正在重启”处理。
      */
-    private String waitForUpdateFinished(JSONObject status) {
+    private String waitForUpdateFinished(JSONObject post, String previous) {
+        if (post != null) {
+            String error = post.optString("error", "").trim();
+            return error.isEmpty() ? null : error;
+        }
         long deadline = System.currentTimeMillis() + 10 * 60_000L;
-        JSONObject current = status;
-        while (true) {
-            if (current != null && !current.optBoolean("updating", false)) {
-                String error = current.optString("error", "").trim();
-                return error.isEmpty() ? null : error;
-            }
-            if (System.currentTimeMillis() > deadline) {
-                return "等待更新完成超时（10 分钟）。";
-            }
+        while (System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(3000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return "已取消。";
             }
+            JSONObject status;
             try {
-                current = request("GET", "/api/update", 20_000);
+                status = request("GET", "/api/update", 20_000);
             } catch (Exception e) {
-                current = null;
+                continue;
+            }
+            if (status.optBoolean("updating", false)) {
+                continue;
+            }
+            String error = status.optString("error", "").trim();
+            if (!error.isEmpty()) {
+                return error;
+            }
+            String version = status.optString("current", "").trim();
+            if (!version.isEmpty() && !version.equals(previous)) {
+                return null;
             }
         }
+        return "等待更新完成超时（10 分钟）。如果服务已经恢复，可以手动重启服务再试。";
     }
 
-    /** 重启本地服务；新二进制只有重新 exec 才会生效。 */
     private void restartService() {
         try {
             if (activity instanceof MainActivity) {
