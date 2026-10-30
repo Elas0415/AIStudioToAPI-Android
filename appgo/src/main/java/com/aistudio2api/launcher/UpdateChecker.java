@@ -151,18 +151,36 @@ public class UpdateChecker {
         }
         Toast.makeText(activity, "正在调用原项目更新器…", Toast.LENGTH_SHORT).show();
         final String previous = env.installedBackendVersion();
+        final long stamped = env.backendBinaryLastModified();
         IO.execute(() -> {
             JSONObject status = null;
+            String rejected = null;
             try {
-                // 后端同步下载并替换二进制，替换后它会重启自身，连接中断属正常。
+                // 后端同步下载并替换二进制，替换后它会 stop 自身，连接随之中断。
                 status = request("POST", "/api/update", 600_000);
             } catch (Exception e) {
-                Log.w(TAG, "apply update interrupted (backend may be restarting)", e);
+                String message = e.getMessage() == null ? "" : e.getMessage();
+                if (message.startsWith("HTTP ")) {
+                    rejected = message;   // 明确的拒绝：已是最新、被托管等
+                } else {
+                    Log.w(TAG, "update connection dropped (backend stopped to restart)", e);
+                }
             }
-            String error = waitForUpdateFinished(status, previous);
-            String installed = status != null
-                    ? status.optString("current", latest).trim()
-                    : latest;
+            String error = rejected;
+            if (error == null && status != null) {
+                String reported = status.optString("error", "").trim();
+                error = reported.isEmpty() ? null : reported;
+            }
+            if (error == null) {
+                error = waitForInstall(stamped, status);
+            }
+            String installed = latest;
+            if (status != null) {
+                String current = status.optString("current", "").trim();
+                if (!current.isEmpty() && !current.equals(previous)) {
+                    installed = current;
+                }
+            }
             if (error == null) {
                 try {
                     env.setInstalledBackendVersion(installed);
@@ -194,44 +212,41 @@ public class UpdateChecker {
     }
 
     /**
-     * 等更新落地。
+     * 等替换落地。
      *
-     * <p>POST 是同步的：正常返回即已替换完成。若连接被后端的自我重启打断，
-     * 轮询 GET /api/update，直到 updating 变回 false 且版本号已经变化；
-     * 期间连不上按“正在重启”处理。
+     * <p>后端更新器在替换二进制后会 stop 自身，进程退出、端口关闭，因此不能
+     * 依赖 {@code GET /api/update} 来确认。这里盯二进制的修改时间：
+     * 变了就是新版本已经写入；同时兼顾 POST 正常返回（同步完成）的情况。
+     *
+     * @param stamped 更新前的二进制时间戳
+     * @return null 表示已安装；否则返回错误说明
      */
-    private String waitForUpdateFinished(JSONObject post, String previous) {
-        if (post != null) {
-            String error = post.optString("error", "").trim();
-            return error.isEmpty() ? null : error;
-        }
-        long deadline = System.currentTimeMillis() + 10 * 60_000L;
+    private String waitForInstall(long stamped, JSONObject post) {
+        long deadline = System.currentTimeMillis() + 5 * 60_000L;
         while (System.currentTimeMillis() < deadline) {
+            if (env.backendBinaryLastModified() > stamped) {
+                return null;
+            }
+            if (post != null) {
+                return null;   // POST 走完且没有报错，视为已替换
+            }
             try {
-                Thread.sleep(3000);
+                Thread.sleep(2000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return "已取消。";
             }
-            JSONObject status;
             try {
-                status = request("GET", "/api/update", 20_000);
-            } catch (Exception e) {
-                continue;
-            }
-            if (status.optBoolean("updating", false)) {
-                continue;
-            }
-            String error = status.optString("error", "").trim();
-            if (!error.isEmpty()) {
-                return error;
-            }
-            String version = status.optString("current", "").trim();
-            if (!version.isEmpty() && !version.equals(previous)) {
-                return null;
+                JSONObject status = request("GET", "/api/update", 15_000);
+                if (!status.optBoolean("updating", false)) {
+                    String error = status.optString("error", "").trim();
+                    return error.isEmpty() ? null : error;
+                }
+            } catch (Exception ignored) {
+                // 服务已经退出（更新器 stop 了自己），继续看时间戳
             }
         }
-        return "等待更新完成超时（10 分钟）。如果服务已经恢复，可以手动重启服务再试。";
+        return "等待更新完成超时（5 分钟）。如果页面还能用，请手动点「重启服务」确认版本。";
     }
 
     private void restartService() {

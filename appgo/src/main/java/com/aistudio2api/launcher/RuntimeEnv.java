@@ -298,6 +298,15 @@ final class RuntimeEnv {
         return "unknown";
     }
 
+    /**
+     * 后端二进制的最后修改时间。在线更新会原地替换
+     * {@code /opt/aistudio2api/aistudio2api}，用它判断替换是否已完成——
+     * 更新器完成替换后会 stop 自身，端口随之消失，不能再靠 HTTP 接口确认。
+     */
+    long backendBinaryLastModified() {
+        return new File(backendDir, "aistudio2api").lastModified();
+    }
+
     void setInstalledBackendVersion(String version) throws IOException {
         Files.write(versionFile().toPath(),
                 (version == null ? "unknown" : version.trim()).getBytes(StandardCharsets.UTF_8));
