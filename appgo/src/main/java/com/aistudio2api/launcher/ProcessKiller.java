@@ -23,7 +23,7 @@ final class ProcessKiller {
 
     /** Everything the app starts, including the virtual desktop stack. */
     private static final String[] ALL_NAMES = {
-            "aistudio2api", "camoufox", "camoufox-bin", "Xvnc", "Xtigervnc",
+            "aistudio2api", "camoufox", "camoufox-bin", "Xvfb", "x11vnc", "node",
             "websockify", "tinywm", "bash", "libproot.so",
     };
 

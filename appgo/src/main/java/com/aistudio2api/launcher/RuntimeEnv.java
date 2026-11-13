@@ -66,18 +66,20 @@ final class RuntimeEnv {
      * v5: tapping a text field (I-beam cursor) raises the IME, taps elsewhere
      * put it away; the manual 「显示键盘」/「输入文本」 menu entries are gone.
      */
-    static final String NOVNC_MARKER = ".novnc-go-v11";
+    static final String NOVNC_MARKER = ".novnc-go-v12";
 
     static final int PORT = 2048;
     static final String LOOPBACK = "127.0.0.1";
 
     /** Directory (inside the rootfs) that holds the Go backend. */
     static final String BACKEND_DIR = "/opt/aistudio2api";
-    static final String NOVNC_DIR = "/opt/novnc";
+    static final String NOVNC_DIR = "/opt/display/web";
 
     static final String DISPLAY = ":99";
-    static final int VNC_PORT = 5900;
-    static final int NOVNC_PORT = 6080;
+    static final int VNC_PORT = 5901;
+    static final int NOVNC_PORT = 6080;   // websockify (loopback only)
+    /** node 网关：提供 noVNC 页面并把 /vnc 代理到 websockify */
+    static final int DISPLAY_PORT = 6081;
 
     /**
      * Geometry of the login view itself, in physical pixels: the phone's own
@@ -628,8 +630,8 @@ final class RuntimeEnv {
         copyAsset(am, "scripts/start-aistudio2api.sh",
                 new File(backendDir, "start-aistudio2api.sh"));
         makeExecutable(new File(backendDir, "start-aistudio2api.sh"));
-        copyAsset(am, "scripts/vnc-serve.sh", new File(backendDir, "vnc-serve.sh"));
-        makeExecutable(new File(backendDir, "vnc-serve.sh"));
+        copyAsset(am, "scripts/display-serve.sh", new File(backendDir, "display-serve.sh"));
+        makeExecutable(new File(backendDir, "display-serve.sh"));
         copyAsset(am, "scripts/kill-browsers.sh", new File(backendDir, "kill-browsers.sh"));
         makeExecutable(new File(backendDir, "kill-browsers.sh"));
     }
@@ -930,7 +932,7 @@ final class RuntimeEnv {
      * during the login window.
      */
     private void deployNovnc(AssetManager am) throws IOException {
-        File dest = new File(rootfs, "opt/novnc");
+        File dest = new File(rootfs, "opt/display/web");
         File marker = new File(dest, NOVNC_MARKER);
         if (marker.exists() && new File(dest, "vnc.html").exists()) {
             return;
@@ -938,7 +940,7 @@ final class RuntimeEnv {
         if (dest.exists()) {
             deleteRecursive(dest);
         }
-        if (!dest.mkdirs()) {
+        if (!dest.mkdirs() && !dest.isDirectory()) {
             throw new IOException("cannot create noVNC dir " + dest);
         }
         copyAsset(am, "novnc", dest);
@@ -963,17 +965,11 @@ final class RuntimeEnv {
      * </ul>
      */
     private void deployDisplayStack(AssetManager am) throws IOException {
-        File xvnc = new File(rootfs, "usr/bin/Xtigervnc");
-        copyAsset(am, "xvnc/Xtigervnc", xvnc);
-        makeExecutable(xvnc);
-
-        // vnc-serve.sh and anything else looking for the conventional name use
-        // /usr/bin/Xvnc, which the distro package provides as a symlink.
-        File link = new File(rootfs, "usr/bin/Xvnc");
-        if (!Files.isSymbolicLink(link.toPath())) {
-            link.delete();
-            Files.createSymbolicLink(link.toPath(), new File("Xtigervnc").toPath());
+        File dir = new File(rootfs, "opt/display");
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new IOException("cannot create display dir");
         }
+        copyAsset(am, "display/server.js", new File(dir, "server.js"));
 
         File tinywm = new File(rootfs, "usr/local/bin/tinywm");
         copyAsset(am, "scripts/tinywm", tinywm);
@@ -1197,7 +1193,7 @@ final class RuntimeEnv {
      *   Xvnc :99 (X + RFB)  ->  websockify/noVNC on 127.0.0.1:6080
      */
     static String[] vncServeCommandInsideRootfs() {
-        return new String[]{"/bin/bash", BACKEND_DIR + "/vnc-serve.sh"};
+        return new String[]{"/bin/bash", BACKEND_DIR + "/display-serve.sh"};
     }
 
     /** proot argv for an arbitrary command inside the rootfs. */

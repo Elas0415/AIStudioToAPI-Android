@@ -182,8 +182,8 @@ public class ServerService extends Service {
                     RuntimeEnv.vncServeCommandInsideRootfs());
             boolean ready = waitForDisplay(12_000);
             Log.i(TAG, ready
-                    ? "virtual desktop ready on 127.0.0.1:" + RuntimeEnv.NOVNC_PORT
-                    : "virtual desktop did not open port " + RuntimeEnv.NOVNC_PORT);
+                    ? "virtual desktop ready on 127.0.0.1:" + RuntimeEnv.DISPLAY_PORT
+                    : "virtual desktop did not open port " + RuntimeEnv.DISPLAY_PORT);
         } catch (Exception e) {
             Log.e(TAG, "failed to start virtual desktop", e);
             displaySession = null;
@@ -212,7 +212,7 @@ public class ServerService extends Service {
             }
             try (java.net.Socket socket = new java.net.Socket()) {
                 socket.connect(new java.net.InetSocketAddress(
-                        "127.0.0.1", RuntimeEnv.NOVNC_PORT), 400);
+                        "127.0.0.1", RuntimeEnv.DISPLAY_PORT), 400);
                 return true;
             } catch (IOException ignored) {
             }

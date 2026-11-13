@@ -90,7 +90,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "AIStudio2API";
 
     private static final String VNC_URL =
-            "http://127.0.0.1:" + RuntimeEnv.NOVNC_PORT + "/login.html";
+            "http://127.0.0.1:" + RuntimeEnv.DISPLAY_PORT + "/";
     private static final int REQ_FILE_CHOOSER = 42101;
 
     /** Console URL; the port comes from .env because the console can change it. */
@@ -816,7 +816,7 @@ public class MainActivity extends AppCompatActivity {
 
         final int token = ++vncLoadToken;
         io.execute(() -> {
-            boolean up = waitForPort(RuntimeEnv.NOVNC_PORT, 25_000);
+            boolean up = waitForPort(RuntimeEnv.DISPLAY_PORT, 25_000);
             handler.post(() -> {
                 if (!loginOverlayVisible || token != vncLoadToken) {
                     return;
