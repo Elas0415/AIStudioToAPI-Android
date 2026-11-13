@@ -14,8 +14,8 @@ android {
         applicationId = "com.aistudio2api.launcher"
         minSdk = 26
         targetSdk = 36
-        versionCode = 20
-        versionName = "0.2.18"
+        versionCode = 22
+        versionName = "0.2.20"
 
         // Only ship arm64 native code.
         ndk {
