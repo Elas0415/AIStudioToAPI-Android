@@ -52,10 +52,11 @@ final class RuntimeEnv {
 
     /**
      * Bumped whenever the extraction/deploy steps change.
-     * v4: the bundled rootfs is back to the stock upstream backend (v0.2.14);
-     * the EXTRA_MODELS experiment was reverted.
+     * v5: the bundled Camoufox is 158.0.1-beta.41 and the launcher no longer
+     * pins CAMOUFOX_PATH, so the backend manages runtime/camoufox and can
+     * download the browser version it needs by itself.
      */
-    static final String ROOT_MARKER = ".extracted-go-v4";
+    static final String ROOT_MARKER = ".extracted-go-v5";
     /**
      * Bumped whenever anything under {@code assets/novnc} changes, otherwise an
      * existing install keeps the previously deployed copy (the deploy is
@@ -72,7 +73,6 @@ final class RuntimeEnv {
 
     /** Directory (inside the rootfs) that holds the Go backend. */
     static final String BACKEND_DIR = "/opt/aistudio2api";
-    static final String CAMOUFOX_PATH = "/opt/camoufox/camoufox-bin";
     static final String NOVNC_DIR = "/opt/novnc";
 
     static final String DISPLAY = ":99";
@@ -597,9 +597,12 @@ final class RuntimeEnv {
 
         authDir().mkdirs();
         new File(backendDir, "runtime").mkdirs();
+        ensureCamoufoxManaged();
         makeExecutable(backendBinary());
-        makeExecutable(new File(rootfs, "opt/camoufox/camoufox-bin"));
-        makeExecutable(new File(rootfs, "opt/camoufox/camoufox"));
+        for (File dir : camoufoxDirs()) {
+            makeExecutable(new File(dir, "camoufox-bin"));
+            makeExecutable(new File(dir, "camoufox"));
+        }
 
         // Refresh launcher + VNC scripts every start so upgrades apply.
         deployScripts(am);
@@ -639,16 +642,51 @@ final class RuntimeEnv {
      * ... no such file or directory", which kills account warmup and the
      * 「浏览器登录」 flow. Alias the two names.
      */
-    private void ensureCamoufoxFontconfig() {
-        File link = new File(rootfs, "opt/camoufox/fontconfig");
-        File target = new File(rootfs, "opt/camoufox/fontconfigs");
-        if (link.exists() || !target.isDirectory()) {
+    /**
+     * 后端在 CAMOUFOX_PATH 未设置时只认 {@code opt/aistudio2api/runtime/camoufox}，
+     * 版本不符会自己下载新版本替换它。把随 APK 附带的浏览器用软链接接进去：
+     * 版本匹配时零成本直接用，上游升级后校验失败，后端下载的新目录会替换掉这条链接。
+     */
+    private void ensureCamoufoxManaged() {
+        File managed = managedCamoufoxDir();
+        File bundled = new File(rootfs, "opt/camoufox");
+        if (managed.exists() || !new File(bundled, "camoufox-bin").isFile()) {
+            return;
+        }
+        if (!managed.getParentFile().isDirectory() && !managed.getParentFile().mkdirs()) {
+            Log.w(TAG, "cannot create runtime/camoufox parent");
             return;
         }
         try {
-            Files.createSymbolicLink(link.toPath(), target.toPath().getFileName());
+            Files.createSymbolicLink(managed.toPath(),
+                    java.nio.file.Paths.get("../../../opt/camoufox"));
         } catch (Exception e) {
-            Log.w(TAG, "cannot create fontconfig alias: " + e.getMessage());
+            Log.w(TAG, "cannot link bundled Camoufox into runtime/: " + e.getMessage());
+        }
+    }
+
+    /** 后端自管的浏览器目录（rootfs 内 opt/aistudio2api/runtime/camoufox）。 */
+    File managedCamoufoxDir() {
+        return new File(backendDir, "runtime/camoufox");
+    }
+
+    /** 需要套用字体/通知修正的 Camoufox 目录：自管目录优先，其次是随包附带的那份。 */
+    private File[] camoufoxDirs() {
+        return new File[]{managedCamoufoxDir(), new File(rootfs, "opt/camoufox")};
+    }
+
+    private void ensureCamoufoxFontconfig() {
+        for (File dir : camoufoxDirs()) {
+            File link = new File(dir, "fontconfig");
+            File target = new File(dir, "fontconfigs");
+            if (link.exists() || !target.isDirectory()) {
+                continue;
+            }
+            try {
+                Files.createSymbolicLink(link.toPath(), target.toPath().getFileName());
+            } catch (Exception e) {
+                Log.w(TAG, "cannot create fontconfig alias: " + e.getMessage());
+            }
         }
     }
 
@@ -672,11 +710,18 @@ final class RuntimeEnv {
 
     private void ensureCamoufoxSandboxWarningSuppressed() {
         ensureCamoufoxSandboxAutoconfig();
-        File bin = new File(rootfs, "opt/camoufox/camoufox-bin");
+        for (File dir : camoufoxDirs()) {
+            suppressCamoufoxSandboxWarning(dir);
+        }
+    }
+
+    /** 对单个 Camoufox 目录套用通知抑制包装器；没有 camoufox-bin 时跳过。 */
+    private void suppressCamoufoxSandboxWarning(File dir) {
+        File bin = new File(dir, "camoufox-bin");
         if (!bin.isFile()) {
             return;
         }
-        File real = new File(rootfs, "opt/camoufox/camoufox-bin.real");
+        File real = new File(dir, "camoufox-bin.real");
         try {
             String head = "";
             try (InputStream in = new FileInputStream(bin)) {
@@ -734,7 +779,12 @@ final class RuntimeEnv {
      * {@code general.config.filename=camoufox.cfg}，所以该文件在父进程启动时执行。
      */
     private void ensureCamoufoxSandboxAutoconfig() {
-        File cfg = new File(rootfs, "opt/camoufox/camoufox.cfg");
+        for (File dir : camoufoxDirs()) {
+            patchCamoufoxAutoconfig(new File(dir, "camoufox.cfg"));
+        }
+    }
+
+    private void patchCamoufoxAutoconfig(File cfg) {
         if (!cfg.isFile()) {
             return;
         }
@@ -1248,7 +1298,10 @@ final class RuntimeEnv {
         // Camoufox/Firefox's content-process sandbox cannot be set up under PRoot
         // (SELinux + missing namespaces), which kills every renderer with SIGSEGV.
         env.put("MOZ_DISABLE_CONTENT_SANDBOX", "1");
-        env.put("CAMOUFOX_PATH", CAMOUFOX_PATH);
+        // CAMOUFOX_PATH is intentionally not set: the backend then owns
+        // runtime/camoufox, validates its version and downloads the release it
+        // requires. Pinning the path made 重试 download a new browser that was
+        // never used, so a version bump (152 -> 158) could never be resolved.
         // The backend opens its headful Camoufox login window on the virtual
         // display provided by vnc-serve.sh; Xvnc/websockify read the same values
         // from RuntimeEnv.DISPLAY.

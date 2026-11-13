@@ -94,11 +94,18 @@ if [ -n "${CAMOUFOX_DIR:-}" ]; then
   rm -rf "$ROOTFS/opt/camoufox"
   cp -a "$CAMOUFOX_DIR" "$ROOTFS/opt/camoufox"
 fi
+# The launcher no longer pins CAMOUFOX_PATH: the backend looks in
+# opt/aistudio2api/runtime/camoufox, validates application.ini against the
+# version it requires and downloads the matching release itself (resumable,
+# proxied, with progress in the console). Shipping a ~600MB browser here only
+# bloats the APK and pins users to one version, so drop it unless asked.
+if [ "${BUNDLE_CAMOUFOX:-0}" != "1" ]; then
+  log "Dropping the bundled Camoufox (backend downloads the required version)"
+  rm -rf "$ROOTFS/opt/camoufox"
+fi
 CAMOUFOX_VERSION="$(sed -n 's/^Version=//p' \
-  "$ROOTFS/opt/camoufox/application.ini" 2>/dev/null | head -1)"
-echo "Camoufox version: ${CAMOUFOX_VERSION:-unknown}"
-[ "$CAMOUFOX_VERSION" = "152.0.4-beta.29" ] || \
-  log "WARNING: expected Camoufox 152.0.4-beta.29; the current build may 403"
+  "$ROOTFS/opt/camoufox/application.ini" 2>/dev/null | head -1 || true)"
+echo "Camoufox version: ${CAMOUFOX_VERSION:-bundled by backend}"
 
 # ---------------------------------------------------------------------------
 # 3. Strip build/runtime caches we do not need (keeps the APK smaller).

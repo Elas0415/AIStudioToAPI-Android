@@ -22,8 +22,11 @@ export SSL_CERT_DIR=/etc/ssl/certs
 # the default keeps the script usable on its own.
 export DISPLAY="${DISPLAY:-:99}"
 
-# Reuse the Camoufox that ships with the bundled rootfs.
-export CAMOUFOX_PATH=/opt/camoufox/camoufox-bin
+# Camoufox is managed by the backend itself: with CAMOUFOX_PATH unset it looks in
+# runtime/camoufox, validates application.ini against the version it requires and
+# downloads the matching release when it is missing or outdated. The launcher links
+# the copy bundled in the rootfs into that path, so the first run needs no download
+# and an upstream bump (e.g. 152 -> 158) is fetched by the console's 重试 button.
 # Firefox's content sandbox cannot initialise under PRoot (SELinux + missing
 # namespaces) and would SIGSEGV every renderer.
 export MOZ_DISABLE_CONTENT_SANDBOX=1
