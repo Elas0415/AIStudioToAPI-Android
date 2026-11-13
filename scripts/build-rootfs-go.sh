@@ -79,7 +79,9 @@ if [ ! -e "$ROOTFS/opt/camoufox" ]; then
   mkdir -p "$ROOTFS"
   zstd -dc "$BASE_ROOTFS" | tar -x -C "$ROOTFS" --no-same-owner 2>&1 \
     | grep -vE "Cannot (mknod|utime|chown|change ownership)" || true
-  [ -e "$ROOTFS/opt/camoufox/camoufox-bin" ] || { echo "base rootfs incomplete"; exit 1; }
+  # A base rootfs without Camoufox is valid: the backend downloads the release
+  # it requires. Only require the system tree to be present.
+  [ -d "$ROOTFS/usr/bin" ] || { echo "base rootfs incomplete"; exit 1; }
 else
   log "Reusing already-extracted rootfs at $ROOTFS"
 fi
