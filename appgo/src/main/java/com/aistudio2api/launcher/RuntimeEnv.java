@@ -56,7 +56,7 @@ final class RuntimeEnv {
      * pins CAMOUFOX_PATH, so the backend manages runtime/camoufox and can
      * download the browser version it needs by itself.
      */
-    static final String ROOT_MARKER = ".extracted-go-v5";
+    static final String ROOT_MARKER = ".extracted-go-v6";
     /**
      * Bumped whenever anything under {@code assets/novnc} changes, otherwise an
      * existing install keeps the previously deployed copy (the deploy is
@@ -600,6 +600,7 @@ final class RuntimeEnv {
         authDir().mkdirs();
         new File(backendDir, "runtime").mkdirs();
         ensureCamoufoxManaged();
+        pruneObsoleteGeoip();
         makeExecutable(backendBinary());
         for (File dir : camoufoxDirs()) {
             makeExecutable(new File(dir, "camoufox-bin"));
@@ -652,7 +653,20 @@ final class RuntimeEnv {
     private void ensureCamoufoxManaged() {
         File managed = managedCamoufoxDir();
         File bundled = new File(rootfs, "opt/camoufox");
-        if (managed.exists() || !new File(bundled, "camoufox-bin").isFile()) {
+        if (!new File(bundled, "camoufox-bin").isFile()) {
+            return;
+        }
+        if (managed.exists()) {
+            // runtime/camoufox is a real directory, so the backend downloaded
+            // (or is already running) its own build and the copy from the APK is
+            // dead weight. Drop it: otherwise every upstream browser bump leaves
+            // another full Camoufox (2.3 GB) behind. A symlink here means the
+            // bundled copy is what the backend is using, so keep it.
+            if (!Files.isSymbolicLink(managed.toPath())
+                    && new File(managed, "camoufox-bin").isFile()) {
+                Log.i(TAG, "dropping the bundled Camoufox; the backend owns runtime/camoufox");
+                deleteRecursive(bundled);
+            }
             return;
         }
         if (!managed.getParentFile().isDirectory() && !managed.getParentFile().mkdirs()) {
@@ -665,6 +679,53 @@ final class RuntimeEnv {
         } catch (Exception e) {
             Log.w(TAG, "cannot link bundled Camoufox into runtime/: " + e.getMessage());
         }
+    }
+
+    /**
+     * v0.3.13 起后端改为在线查询出口位置，不再使用本地 GeoIP 库；旧版本仍会读取
+     * runtime/geoip，所以只在内置（或当前）后端版本足够新时才删除这 51 MB。
+     */
+    private void pruneObsoleteGeoip() {
+        File dir = new File(backendDir, "runtime/geoip");
+        if (!dir.exists()) {
+            return;
+        }
+        if (compareVersion(installedBackendVersion(), "v0.3.13") >= 0) {
+            deleteRecursive(dir);
+            Log.i(TAG, "removed the local GeoIP cache; v0.3.13+ queries it online");
+        }
+    }
+
+    /** 比较 vX.Y.Z 形式的版本号；无法解析的部分按 0 处理。 */
+    private static int compareVersion(String left, String right) {
+        int[] a = parseVersion(left);
+        int[] b = parseVersion(right);
+        for (int i = 0; i < 3; i++) {
+            if (a[i] != b[i]) {
+                return a[i] < b[i] ? -1 : 1;
+            }
+        }
+        return 0;
+    }
+
+    private static int[] parseVersion(String value) {
+        int[] parts = new int[3];
+        if (value == null) {
+            return parts;
+        }
+        String text = value.trim();
+        if (text.startsWith("v") || text.startsWith("V")) {
+            text = text.substring(1);
+        }
+        String[] fields = text.split("[-+]")[0].split("\\.");
+        for (int i = 0; i < 3 && i < fields.length; i++) {
+            try {
+                parts[i] = Integer.parseInt(fields[i]);
+            } catch (NumberFormatException ignored) {
+                parts[i] = 0;
+            }
+        }
+        return parts;
     }
 
     /** 后端自管的浏览器目录（rootfs 内 opt/aistudio2api/runtime/camoufox）。 */
@@ -1393,7 +1454,7 @@ final class RuntimeEnv {
             errDrain.join(2000);
             // Android SELinux forbids hardlinks inside app-private storage, so tar
             // reports link errors and exits non-zero even though the rest extracted.
-            if (code != 0 && !isOnlyHardlinkErrors(err.toString())) {
+            if (code != 0 && !isOnlyMetadataErrors(err.toString())) {
                 String detail = err.toString().trim();
                 throw new IOException("tar=" + code + (detail.isEmpty() ? "" : " " + detail));
             }
@@ -1407,17 +1468,40 @@ final class RuntimeEnv {
         }
     }
 
-    private static boolean isOnlyHardlinkErrors(String stderr) {
+    /**
+     * True when tar's non-zero exit is only about metadata that an app-private
+     * extraction can never apply.
+     *
+     * <p>Under Android SELinux the app cannot chown to 0:0, cannot set arbitrary
+     * mtimes and cannot create hardlinks inside its data dir. Toybox reports the
+     * hardlink case; the GNU tar shipped by some vendor ROMs reports chown/utime
+     * for every directory ("./mnt", "./etc", ...) and exits 1 even though the
+     * tree extracted fine. Both are harmless here, so ignore them and let the
+     * completeness check below decide whether the extraction really worked.
+     */
+    private static boolean isOnlyMetadataErrors(String stderr) {
         boolean sawError = false;
         for (String raw : stderr.split("\n")) {
             String line = raw.trim();
             if (line.isEmpty()) {
                 continue;
             }
-            if (line.equals("tar: had errors")) {
+            if (line.equals("tar: had errors")
+                    || line.startsWith("tar: Exiting with failure status")) {
                 continue;
             }
-            if (line.startsWith("tar: can't link") && line.contains("Permission denied")) {
+            boolean denied = line.contains("Operation not permitted")
+                    || line.contains("Permission denied")
+                    || line.contains("Read-only file system");
+            if (denied && (line.contains("chown")
+                    || line.contains("chmod")
+                    || line.contains("utime")
+                    || line.contains("utimens")
+                    || line.contains("mtime")
+                    || line.contains("timestamps")
+                    || line.contains("link")
+                    || line.contains("symlink")
+                    || line.contains("ownership"))) {
                 continue;
             }
             sawError = true;

@@ -118,6 +118,19 @@ rm -rf "$ROOTFS/root/.npm/_cacache" \
        "$ROOTFS/var/lib/apt/lists" \
        "$ROOTFS/tmp/"* 2>/dev/null || true
 
+# Drop what the Go app never touches and that only inflates the APK:
+# - /opt/a2a, /opt/novnc: leftovers from the Node app / the old TigerVNC UI
+# - npm, npx, corepack: only `node` is needed for the display gateway
+# - icons and docs: no GUI application runs inside the rootfs
+log "Trimming unused runtime payload"
+rm -rf "$ROOTFS/opt/a2a" "$ROOTFS/opt/novnc" \
+       "$ROOTFS/usr/local/lib/node_modules/npm" \
+       "$ROOTFS/usr/local/lib/node_modules/corepack" \
+       "$ROOTFS/usr/local/bin/npm" "$ROOTFS/usr/local/bin/npx" \
+       "$ROOTFS/usr/local/bin/corepack" \
+       "$ROOTFS/usr/share/icons" "$ROOTFS/usr/share/doc" \
+       "$ROOTFS/usr/share/man" 2>/dev/null || true
+
 # ---------------------------------------------------------------------------
 # 4. Install the Go backend.
 # ---------------------------------------------------------------------------
